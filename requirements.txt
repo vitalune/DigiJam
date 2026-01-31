@@ -1,4 +1,4 @@
-# Body Movement Tracking Dependencies
+# DigiJam - Body Movement Tracking & Drum Classification
 # For Apple Silicon (M1/M2/M3/M4) Macs
 
 # MediaPipe for pose detection (Apple Silicon version)
@@ -9,3 +9,6 @@ opencv-python>=4.8.0
 
 # Numerical computing
 numpy>=1.24.0
+
+# Note: The objc warnings about duplicate OpenCV classes are harmless
+# and do not affect functionality.

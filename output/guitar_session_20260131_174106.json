@@ -1,0 +1,112 @@
+{
+  "session_timestamp": "2026-01-31T17:41:32.770794",
+  "instrument": "guitar",
+  "dominant_hand": "right",
+  "total_strums": 13,
+  "strums": [
+    {
+      "timestamp": "2026-01-31T17:41:12.387697",
+      "player_id": 6,
+      "instrument": "guitar",
+      "action": "strum",
+      "fret": 2,
+      "intensity": 1.2442
+    },
+    {
+      "timestamp": "2026-01-31T17:41:15.094534",
+      "player_id": 6,
+      "instrument": "guitar",
+      "action": "strum",
+      "fret": 1,
+      "intensity": 1.9433
+    },
+    {
+      "timestamp": "2026-01-31T17:41:16.380941",
+      "player_id": 6,
+      "instrument": "guitar",
+      "action": "strum",
+      "fret": 1,
+      "intensity": 2.0714
+    },
+    {
+      "timestamp": "2026-01-31T17:41:17.305431",
+      "player_id": 6,
+      "instrument": "guitar",
+      "action": "strum",
+      "fret": 1,
+      "intensity": 2.3658
+    },
+    {
+      "timestamp": "2026-01-31T17:41:18.229407",
+      "player_id": 6,
+      "instrument": "guitar",
+      "action": "strum",
+      "fret": 1,
+      "intensity": 2.2073
+    },
+    {
+      "timestamp": "2026-01-31T17:41:19.186149",
+      "player_id": 6,
+      "instrument": "guitar",
+      "action": "strum",
+      "fret": 1,
+      "intensity": 2.1429
+    },
+    {
+      "timestamp": "2026-01-31T17:41:20.903021",
+      "player_id": 6,
+      "instrument": "guitar",
+      "action": "strum",
+      "fret": 2,
+      "intensity": 2.4455
+    },
+    {
+      "timestamp": "2026-01-31T17:41:22.486259",
+      "player_id": 6,
+      "instrument": "guitar",
+      "action": "strum",
+      "fret": 2,
+      "intensity": 2.1769
+    },
+    {
+      "timestamp": "2026-01-31T17:41:24.466649",
+      "player_id": 6,
+      "instrument": "guitar",
+      "action": "strum",
+      "fret": 3,
+      "intensity": 2.094
+    },
+    {
+      "timestamp": "2026-01-31T17:41:25.917882",
+      "player_id": 6,
+      "instrument": "guitar",
+      "action": "strum",
+      "fret": 3,
+      "intensity": 2.1551
+    },
+    {
+      "timestamp": "2026-01-31T17:41:27.569017",
+      "player_id": 6,
+      "instrument": "guitar",
+      "action": "strum",
+      "fret": 4,
+      "intensity": 2.1045
+    },
+    {
+      "timestamp": "2026-01-31T17:41:29.482604",
+      "player_id": 6,
+      "instrument": "guitar",
+      "action": "strum",
+      "fret": 2,
+      "intensity": 2.4684
+    },
+    {
+      "timestamp": "2026-01-31T17:41:32.586990",
+      "player_id": 6,
+      "instrument": "guitar",
+      "action": "strum",
+      "fret": 1,
+      "intensity": 1.1837
+    }
+  ]
+}
