@@ -41,8 +41,10 @@ def find_closest_sample(target_note: str, available_octaves: List[int]) -> Tuple
     note_name, octave = parse_note(target_note)
 
     # Get distances to C in same octave and next octave
-    dist_same = SAME_OCTAVE_DISTANCE.get(note_name, 0)
-    dist_next = NEXT_OCTAVE_DISTANCE.get(note_name, 12)
+    if note_name not in SAME_OCTAVE_DISTANCE:
+        raise ValueError(f"Unknown note name '{note_name}' — not found in SAME_OCTAVE_DISTANCE")
+    dist_same = SAME_OCTAVE_DISTANCE[note_name]
+    dist_next = NEXT_OCTAVE_DISTANCE[note_name]
 
     best_sample = None
     best_shift = None
@@ -111,7 +113,7 @@ def pitch_shift(audio: np.ndarray, semitones: int, sample_rate: int) -> np.ndarr
     # New length after pitch shift
     # Higher pitch (ratio > 1) = shorter audio
     # Lower pitch (ratio < 1) = longer audio
-    new_length = int(len(audio) / ratio)
+    new_length = int(len(audio) * ratio)
 
     if new_length <= 0:
         return np.zeros(1, dtype=audio.dtype)

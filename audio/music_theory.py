@@ -20,19 +20,37 @@ NOTE_TO_SEMITONE = {
     'Bbb': 9, 'Ebb': 2, 'Abb': 6, 'Dbb': 0, 'Gbb': 5, 'Cbb': 10, 'Fbb': 3
 }
 
+# Notes that cross octave boundaries when used with a written octave number.
+# Cb5 in music means "C5 lowered by a half step" = B4, so the real octave is one less.
+# B#4 in music means "B4 raised by a half step" = C5, so the real octave is one more.
+OCTAVE_BOUNDARY_ADJUSTMENT = {
+    'Cb': -1,
+    'Cbb': -1,
+    'B#': 1,
+}
+
 # Semitone distances for pitch selection algorithm
 # Distance from note to C in SAME octave (shift up)
 SAME_OCTAVE_DISTANCE = {
     'C': 0, 'C#': 1, 'Db': 1, 'D': 2, 'D#': 3, 'Eb': 3,
     'E': 4, 'F': 5, 'F#': 6, 'Gb': 6, 'G': 7, 'G#': 8,
-    'Ab': 8, 'A': 9, 'A#': 10, 'Bb': 10, 'B': 11, 'Cb': 11
+    'Ab': 8, 'A': 9, 'A#': 10, 'Bb': 10, 'B': 11, 'Cb': 11,
+    # Enharmonic equivalents
+    'Fb': 4, 'E#': 5, 'B#': 0,
+    # Double flats
+    'Bbb': 9, 'Ebb': 2, 'Abb': 6, 'Dbb': 0, 'Gbb': 5, 'Cbb': 10, 'Fbb': 3
 }
 
 # Distance from note to C in NEXT octave (shift down)
+# Rule: NEXT = 12 - SAME for all notes
 NEXT_OCTAVE_DISTANCE = {
-    'C': 11, 'C#': 10, 'Db': 10, 'D': 9, 'D#': 8, 'Eb': 8,
-    'E': 7, 'F': 6, 'F#': 5, 'Gb': 5, 'G': 4, 'G#': 3,
-    'Ab': 3, 'A': 2, 'A#': 1, 'Bb': 1, 'B': 0, 'Cb': 0
+    'C': 12, 'C#': 11, 'Db': 11, 'D': 10, 'D#': 9, 'Eb': 9,
+    'E': 8, 'F': 7, 'F#': 6, 'Gb': 6, 'G': 5, 'G#': 4,
+    'Ab': 4, 'A': 3, 'A#': 2, 'Bb': 2, 'B': 1, 'Cb': 1,
+    # Enharmonic equivalents
+    'Fb': 8, 'E#': 7, 'B#': 12,
+    # Double flats
+    'Bbb': 3, 'Ebb': 10, 'Abb': 6, 'Dbb': 12, 'Gbb': 7, 'Cbb': 2, 'Fbb': 9
 }
 
 # Available keys for selection
@@ -208,7 +226,7 @@ KEY_CHORD_MAPPINGS: Dict[str, Dict[int, List[str]]] = {
     },
     # Db Minor (enharmonic to C# Minor)
     'Db Minor': {
-        1: ['Db4', 'E4', 'Ab4'],     # Dbm
+        1: ['Db4', 'Fb4', 'Ab4'],     # Dbm
         2: ['Eb4', 'Gb4', 'A4'],     # Eb°
         3: ['E4', 'Ab4', 'B4'],      # E
         4: ['F#4', 'A4', 'C#5'],     # F#m
@@ -309,7 +327,7 @@ KEY_CHORD_MAPPINGS: Dict[str, Dict[int, List[str]]] = {
     # Gb Minor (enharmonic to F# Minor)
     'Gb Minor': {
         1: ['Gb4', 'A4', 'Db5'],     # Gbm
-        2: ['Ab4', 'Cb5', 'E5'],     # Ab°
+        2: ['Ab4', 'Cb5', 'D5'],     # Ab° (Ab + Cb + Ebb = Ab + Cb + D)
         3: ['A4', 'Db5', 'E5'],      # A
         4: ['B4', 'D5', 'F#5'],      # Bm
         5: ['C#5', 'E5', 'G#5'],     # C#m
@@ -440,6 +458,10 @@ def note_to_midi(note: str) -> int:
     """
     Convert note name to MIDI number.
 
+    Handles octave-boundary enharmonics:
+    - Cb5 = B4 (MIDI 71), not B5
+    - B#4 = C5 (MIDI 72), not C4
+
     Args:
         note: Note string like 'C4', 'Ab5'
 
@@ -448,7 +470,8 @@ def note_to_midi(note: str) -> int:
     """
     name, octave = parse_note(note)
     semitone = NOTE_TO_SEMITONE.get(name, 0)
-    return (octave + 1) * 12 + semitone
+    octave_adj = OCTAVE_BOUNDARY_ADJUSTMENT.get(name, 0)
+    return (octave + octave_adj + 1) * 12 + semitone
 
 
 def midi_to_note(midi: int) -> str:

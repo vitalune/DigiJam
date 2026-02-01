@@ -13,6 +13,15 @@ numpy>=1.24.0
 # Audio processing (for audio_engine.py)
 scipy>=1.10.0
 
+# Audio analysis (for analyze_wav.py)
+librosa>=0.10.0
+
+# Claude API (for analyze_wav.py)
+anthropic>=0.18.0
+
+# HTTP requests (for compose_music.py)
+requests>=2.28.0
+
 # Multi-person detection (for multi-player sessions)
 # Note: This requires PyTorch as a dependency (~2GB)
 ultralytics>=8.0.0

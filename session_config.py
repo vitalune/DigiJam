@@ -3,11 +3,20 @@ Session configuration dataclasses for multi-player DigiJam sessions.
 
 Defines the configuration structure for multi-player sessions including
 player assignments, instruments, and session-wide settings.
+
+Config files are stored as output/session_config_NNN.json with incrementing numbers.
 """
 
+import json
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Optional, Dict, Any
 from enum import Enum
+
+
+# Output directory for session configs
+OUTPUT_DIR = Path("output")
 
 
 class Instrument(str, Enum):
@@ -147,6 +156,95 @@ class SessionConfig:
             PlayerConfig.from_dict(p) for p in data.get("players", [])
         ]
         return config
+
+    def save(self, output_dir: Path = OUTPUT_DIR) -> Path:
+        """
+        Save config to a numbered file (session_config_NNN.json).
+
+        Args:
+            output_dir: Directory to save config files
+
+        Returns:
+            Path to the saved config file
+        """
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Find highest existing number
+        config_pattern = re.compile(r"session_config_(\d+)\.json$")
+        max_num = 0
+
+        for f in output_dir.iterdir():
+            match = config_pattern.match(f.name)
+            if match:
+                max_num = max(max_num, int(match.group(1)))
+
+        # Create next numbered file
+        next_num = max_num + 1
+        filepath = output_dir / f"session_config_{next_num:03d}.json"
+
+        with open(filepath, 'w') as f:
+            json.dump(self.to_dict(), f, indent=2)
+
+        return filepath
+
+    def save_as(self, filepath: Path) -> None:
+        """
+        Save config to a specific file path.
+
+        Args:
+            filepath: Exact path to save the config file
+        """
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        with open(filepath, 'w') as f:
+            json.dump(self.to_dict(), f, indent=2)
+
+    @classmethod
+    def load(cls, filepath: Path) -> 'SessionConfig':
+        """
+        Load config from a file.
+
+        Args:
+            filepath: Path to config file
+
+        Returns:
+            SessionConfig instance
+        """
+        with open(filepath, 'r') as f:
+            data = json.load(f)
+        return cls.from_dict(data)
+
+    @classmethod
+    def load_latest(cls, output_dir: Path = OUTPUT_DIR) -> Optional['SessionConfig']:
+        """
+        Load the most recent numbered config file.
+
+        Args:
+            output_dir: Directory containing config files
+
+        Returns:
+            SessionConfig or None if no config found
+        """
+        if not output_dir.exists():
+            return None
+
+        config_pattern = re.compile(r"session_config_(\d+)\.json$")
+        numbered_configs = []
+
+        for f in output_dir.iterdir():
+            match = config_pattern.match(f.name)
+            if match:
+                numbered_configs.append((int(match.group(1)), f))
+
+        if numbered_configs:
+            numbered_configs.sort(key=lambda x: x[0], reverse=True)
+            return cls.load(numbered_configs[0][1])
+
+        # Fallback to unnumbered config
+        fallback = output_dir / "session_config.json"
+        if fallback.exists():
+            return cls.load(fallback)
+
+        return None
 
 
 def create_single_player_config(
