@@ -26,5 +26,11 @@ requests>=2.28.0
 # Note: This requires PyTorch as a dependency (~2GB)
 ultralytics>=8.0.0
 
+# Google Gemini API (for generate_video.py - Veo 3.1)
+google-genai>=0.8.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
 # Note: The objc warnings about duplicate OpenCV classes are harmless
 # and do not affect functionality.

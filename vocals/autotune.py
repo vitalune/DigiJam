@@ -14,6 +14,8 @@ Usage:
 
 import argparse
 import copy
+import json
+import re
 import sys
 import os
 from dataclasses import dataclass
@@ -51,6 +53,102 @@ def get_output_path(filename: str) -> Path:
     return OUTPUT_DIR / filename
 
 
+# Session config directory
+SESSION_CONFIG_DIR = Path("output")
+
+
+def normalize_key_format(key: str) -> Optional[str]:
+    """
+    Normalize key to librosa format, accepting multiple input formats.
+
+    Accepts:
+        - Librosa format: "E:min", "C:maj"
+        - Session config format: "E Minor", "C Major"
+
+    Args:
+        key: Key in any supported format
+
+    Returns:
+        Key in librosa format (e.g., "E:min") or None if invalid
+    """
+    if not key:
+        return None
+
+    key = key.strip()
+
+    # Already in librosa format?
+    if ":" in key:
+        # Validate it's a known key
+        if key in ["C:maj", "C#:maj", "D:maj", "D#:maj", "E:maj", "F:maj",
+                   "F#:maj", "G:maj", "G#:maj", "A:maj", "A#:maj", "B:maj",
+                   "C:min", "C#:min", "D:min", "D#:min", "E:min", "F:min",
+                   "F#:min", "G:min", "G#:min", "A:min", "A#:min", "B:min"]:
+            return key
+        return None
+
+    # Try session config format ("E Minor", "C Major")
+    parts = key.split()
+    if len(parts) >= 2:
+        root = parts[0]
+        mode = parts[1].lower()
+        if mode.startswith("min"):
+            return f"{root}:min"
+        elif mode.startswith("maj"):
+            return f"{root}:maj"
+
+    return None
+
+
+def get_key_from_session_config() -> Optional[str]:
+    """
+    Read the key from the latest session config file.
+
+    Returns:
+        Key in librosa format (e.g., "E:min") or None if not found
+    """
+    if not SESSION_CONFIG_DIR.exists():
+        return None
+
+    # Find numbered config files
+    config_pattern = re.compile(r"session_config_(\d+)\.json$")
+    numbered_configs = []
+
+    for f in SESSION_CONFIG_DIR.iterdir():
+        match = config_pattern.match(f.name)
+        if match:
+            numbered_configs.append((int(match.group(1)), f))
+
+    config_path = None
+
+    if numbered_configs:
+        # Use highest numbered config
+        numbered_configs.sort(key=lambda x: x[0], reverse=True)
+        config_path = numbered_configs[0][1]
+    else:
+        # Fallback to unnumbered config
+        fallback = SESSION_CONFIG_DIR / "session_config.json"
+        if fallback.exists():
+            config_path = fallback
+
+    if config_path is None:
+        return None
+
+    try:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+
+        key_raw = config.get("key")
+        if key_raw:
+            key = normalize_key_format(key_raw)
+            if key:
+                print(f"Using key from {config_path.name}: {key_raw} -> {key}")
+                return key
+    except (json.JSONDecodeError, IOError):
+        pass
+
+    return None
+
+
 @dataclass
 class AutotuneConfig:
     """Configuration for autotune processing."""
@@ -60,8 +158,8 @@ class AutotuneConfig:
     fmax: float = 2093.0  # C7 - maximum frequency for pitch detection
     frame_length: int = 2048
     hop_length: Optional[int] = None  # Defaults to frame_length // 4
-    correction_strength: float = 0.8  # 0.0 = no correction, 1.0 = full correction
-    smoothing_kernel: int = 5  # Median filter kernel size for smoothing
+    correction_strength: float = 1.0  # 0.0 = no correction, 1.0 = full correction
+    smoothing_kernel: int = 15  # Median filter kernel size for smoothing
 
     # Retune speed: 0 = slowest (natural), 100 = fastest (robotic T-Pain effect)
     # Internally maps to smoothing and correction response
@@ -369,9 +467,12 @@ AVAILABLE_KEYS = [
 
 def display_available_keys() -> None:
     """Display available musical keys."""
-    print("\nAvailable keys:")
-    print("  Major: " + ", ".join(k for k in AVAILABLE_KEYS if ":maj" in k))
-    print("  Minor: " + ", ".join(k for k in AVAILABLE_KEYS if ":min" in k))
+    print("\nAvailable keys (both formats accepted):")
+    print("  Major: C:maj (or 'C Major'), C#:maj, D:maj, etc.")
+    print("  Minor: C:min (or 'C Minor'), C#:min, D:min, etc.")
+    print("\nAll keys:")
+    print("  " + ", ".join(k for k in AVAILABLE_KEYS if ":maj" in k))
+    print("  " + ", ".join(k for k in AVAILABLE_KEYS if ":min" in k))
 
 
 def parse_args():
@@ -381,20 +482,23 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    # Autotune to C minor (output saved to output/vocals/)
-    python -m vocals.autotune vocals.wav --key "C:min"
+    # Autotune using key from session config (auto-detected)
+    python -m vocals.autotune vocals.wav
 
-    # FULL PIPELINE: Autotune + mix with instrumental in one command
-    python -m vocals.autotune vocals.wav -i instrumental.wav --key "A:min"
+    # FULL PIPELINE: Autotune + mix with instrumental (key auto-detected)
+    python -m vocals.autotune vocals.wav -i instrumental.wav
+
+    # Override key manually
+    python -m vocals.autotune vocals.wav --key "C:min"
 
     # Full pipeline with custom output and settings
     python -m vocals.autotune vocals.wav -i beat.wav -o song.wav -k "F#:min" -r 80
 
     # Fast retune speed (robotic T-Pain effect)
-    python -m vocals.autotune vocals.wav --key "A:min" --retune-speed 100
+    python -m vocals.autotune vocals.wav --retune-speed 100
 
     # Slow retune (natural sounding)
-    python -m vocals.autotune vocals.wav --key "G:maj" --retune-speed 20
+    python -m vocals.autotune vocals.wav --retune-speed 20
 
     # List available keys
     python -m vocals.autotune --list-keys
@@ -425,8 +529,8 @@ Examples:
     parser.add_argument(
         "-k", "--key",
         type=str,
-        default="C:maj",
-        help="Musical key for pitch correction (default: C:maj)"
+        default=None,
+        help="Musical key for pitch correction, e.g. 'E:min' or 'E Minor' (default: auto-detect from session config)"
     )
 
     parser.add_argument(
@@ -507,15 +611,23 @@ def main():
             print(f"Error: Instrumental file not found: {instrumental_path}")
             return 1
 
-    # Validate key
-    if args.key not in AVAILABLE_KEYS:
-        print(f"Error: Invalid key '{args.key}'")
-        display_available_keys()
-        return 1
+    # Determine key: user-provided > session config > default
+    if args.key is not None:
+        # Normalize user-provided key (accepts "E Minor" or "E:min")
+        key = normalize_key_format(args.key)
+        if key is None:
+            print(f"Error: Invalid key '{args.key}'")
+            display_available_keys()
+            return 1
+    else:
+        key = get_key_from_session_config()
+        if key is None:
+            key = "C:maj"
+            print(f"No session config found, using default key: {key}")
 
     # Create config
     config = AutotuneConfig(
-        key=args.key,
+        key=key,
         retune_speed=args.retune_speed,
         low_latency=args.low_latency
     )
@@ -532,6 +644,7 @@ def main():
         print("    AUTOTUNE + MIX PIPELINE")
     else:
         print("        AUTOTUNE PROCESSOR")
+    print(f"    Key: {key}")
     print("=" * 50)
 
     # Step 1: Autotune
