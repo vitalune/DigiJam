@@ -11,8 +11,10 @@ from typing import Optional, List, Union
 
 from drum_classifier import DrumClassifier
 from guitar_classifier import GuitarClassifier
+from piano_classifier import PianoClassifier
 from hit_detector import HitEvent
 from strum_detector import StrumEvent
+from piano_detector import PianoEvent
 
 
 class WebcamRecorder:
@@ -30,7 +32,7 @@ class WebcamRecorder:
     """
 
     # Available instruments
-    INSTRUMENTS = ["drums", "guitar"]
+    INSTRUMENTS = ["drums", "guitar", "piano"]
 
     def __init__(
         self,
@@ -52,17 +54,25 @@ class WebcamRecorder:
         os.makedirs(output_dir, exist_ok=True)
 
         # Classifier will be initialized when run() is called
-        self.classifier: Optional[Union[DrumClassifier, GuitarClassifier]] = None
+        self.classifier: Optional[Union[DrumClassifier, GuitarClassifier, PianoClassifier]] = None
 
         # Recording state
         self.is_recording = False
         self.video_writer: Optional[cv2.VideoWriter] = None
         self.session_hits: List[HitEvent] = []  # For drums
         self.session_strums: List[StrumEvent] = []  # For guitar
+        self.session_piano_hits: List[PianoEvent] = []  # For piano
         self.session_start_time: Optional[float] = None
         self.frame_count = 0
         self.video_path: Optional[str] = None
         self.json_path: Optional[str] = None
+
+        # Piano calibration countdown state
+        self.calibration_countdown_active = False
+        self.calibration_countdown_start: Optional[float] = None
+        self.CALIBRATION_COUNTDOWN_SECONDS = 3.0
+        self._start_recording_after_calibration = True
+        self.fps: float = 30.0  # Will be updated when webcam opens
 
     def _on_hit(self, hit: HitEvent):
         """Callback when drum hit is detected during recording."""
@@ -73,6 +83,112 @@ class WebcamRecorder:
         """Callback when guitar strum is detected during recording."""
         if self.is_recording:
             self.session_strums.append(strum)
+
+    def _on_piano_hit(self, hit: PianoEvent):
+        """Callback when piano hit is detected during recording."""
+        if self.is_recording:
+            self.session_piano_hits.append(hit)
+
+    def _start_piano_calibration_countdown(self, start_recording_after: bool = True):
+        """
+        Start the 3-second calibration countdown for piano.
+
+        Args:
+            start_recording_after: If True, start recording after calibration. If False, just recalibrate.
+        """
+        self.calibration_countdown_active = True
+        self.calibration_countdown_start = time.time()
+        self._start_recording_after_calibration = start_recording_after
+        # Reset calibration to capture fresh positions
+        self.classifier.reset_calibration()
+        print("\n" + "=" * 50)
+        print("PIANO CALIBRATION")
+        print("Position your hands at the piano boundaries:")
+        print("  - Left hand at the LEFT edge of your virtual piano")
+        print("  - Right hand at the RIGHT edge of your virtual piano")
+        print("Calibrating in 3 seconds...")
+        print("=" * 50 + "\n")
+
+    def _check_calibration_countdown(self, frame) -> bool:
+        """
+        Check and update calibration countdown state.
+
+        Args:
+            frame: Current video frame for drawing countdown
+
+        Returns:
+            True if countdown is still active, False if finished or not active
+        """
+        if not self.calibration_countdown_active:
+            return False
+
+        elapsed = time.time() - self.calibration_countdown_start
+        remaining = self.CALIBRATION_COUNTDOWN_SECONDS - elapsed
+
+        if remaining <= 0:
+            # Countdown finished - calibrate
+            self.calibration_countdown_active = False
+
+            if self.classifier.calibrate_now():
+                print("Piano calibrated successfully!")
+                # Start recording only if requested
+                if self._start_recording_after_calibration:
+                    self._start_recording(frame, self.fps)
+            else:
+                print("Calibration failed - hands not detected. Try again.")
+
+            return False
+
+        # Draw countdown on frame
+        h, w = frame.shape[:2]
+        countdown_text = f"CALIBRATE IN: {int(remaining) + 1}"
+
+        # Large centered countdown
+        font_scale = 2.0
+        thickness = 4
+        (text_w, text_h), _ = cv2.getTextSize(
+            countdown_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness
+        )
+        text_x = (w - text_w) // 2
+        text_y = (h + text_h) // 2
+
+        # Draw background
+        cv2.rectangle(
+            frame,
+            (text_x - 20, text_y - text_h - 20),
+            (text_x + text_w + 20, text_y + 20),
+            (0, 0, 0),
+            -1
+        )
+
+        # Draw countdown text
+        cv2.putText(
+            frame,
+            countdown_text,
+            (text_x, text_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            (0, 255, 255),
+            thickness
+        )
+
+        # Draw instruction below
+        instruction = "Position hands at piano edges"
+        inst_scale = 0.8
+        (inst_w, inst_h), _ = cv2.getTextSize(
+            instruction, cv2.FONT_HERSHEY_SIMPLEX, inst_scale, 2
+        )
+        cv2.putText(
+            frame,
+            instruction,
+            ((w - inst_w) // 2, text_y + 50),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            inst_scale,
+            (255, 255, 255),
+            2
+        )
+
+        return True
 
     def _start_recording(self, frame, fps: float):
         """Start a new recording session."""
@@ -96,12 +212,15 @@ class WebcamRecorder:
         self.is_recording = True
         self.session_hits = []
         self.session_strums = []
+        self.session_piano_hits = []
 
         # Clear the appropriate log
         if self.instrument == "drums":
             self.classifier.clear_hit_log()
         elif self.instrument == "guitar":
             self.classifier.clear_strum_log()
+        elif self.instrument == "piano":
+            self.classifier.clear_hit_log()
 
         self.session_start_time = time.time()
         self.frame_count = 0
@@ -134,6 +253,10 @@ class WebcamRecorder:
             self.classifier.save_strum_log(self.json_path)
             action_count = len(self.classifier.strum_log)
             action_name = "Strums"
+        elif self.instrument == "piano":
+            self.classifier.save_hit_log(self.json_path)
+            action_count = len(self.classifier.hit_log)
+            action_name = "Hits"
         else:
             action_count = 0
             action_name = "Actions"
@@ -230,6 +353,11 @@ class WebcamRecorder:
                 model_complexity=1,
                 on_strum_callback=self._on_strum
             )
+        elif self.instrument == "piano":
+            self.classifier = PianoClassifier(
+                model_complexity=1,
+                on_hit_callback=self._on_piano_hit
+            )
 
         # Determine hand assignments based on dexterity
         strum_hand = self.dominant_hand
@@ -266,6 +394,18 @@ class WebcamRecorder:
             print("  'q' - Quit")
             print("  'c' - Clear strum log")
             print("  'g' - Recalibrate fret position")
+        elif self.instrument == "piano":
+            print("\nPiano Actions:")
+            print("  Right Hand: Determines chord (7 zones = 7 chords)")
+            print("  Left Hand:  Plays bass root note (zone = octave)")
+            print("\nCalibration: 3-second countdown when you press 'r'")
+            print("Position hands at LEFT and RIGHT edges of your virtual piano.")
+            print("Hit upward (lift hands) to trigger notes.")
+            print("\nControls:")
+            print("  'r' or 's' - Start/Stop recording (with 3s calibration)")
+            print("  'q' - Quit")
+            print("  'c' - Clear hit log")
+            print("  'p' - Recalibrate piano")
 
         print("=" * 50 + "\n")
 
@@ -275,9 +415,9 @@ class WebcamRecorder:
             return
 
         # Get actual FPS from camera, default to 30 if not available
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps <= 0:
-            fps = 30.0
+        self.fps = cap.get(cv2.CAP_PROP_FPS)
+        if self.fps <= 0:
+            self.fps = 30.0
 
         print("Starting webcam feed...")
         print("Press 'r' or 's' to start recording\n")
@@ -295,6 +435,16 @@ class WebcamRecorder:
 
             # Draw overlay
             self.classifier.draw_overlay(frame)
+
+            # Handle piano calibration countdown
+            if self.instrument == "piano" and self._check_calibration_countdown(frame):
+                # During countdown, show frame and continue
+                window_name = f'{self.instrument.capitalize()} Classifier'
+                cv2.imshow(window_name, frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    break
+                continue
 
             # Draw recording indicator
             if self.is_recording:
@@ -318,6 +468,9 @@ class WebcamRecorder:
                 elif self.instrument == "guitar":
                     action_count = len(self.classifier.strum_log)
                     action_name = "strums"
+                elif self.instrument == "piano":
+                    action_count = len(self.classifier.hit_log)
+                    action_name = "hits"
                 else:
                     action_count = 0
                     action_name = "actions"
@@ -350,9 +503,11 @@ class WebcamRecorder:
             # Draw instructions at bottom
             h = frame.shape[0]
             if self.instrument == "guitar":
-                instruction_text = f"GUITAR | 'r'=record 's'=stop 'g'=recalibrate 'q'=quit"
+                instruction_text = "GUITAR | 'r'=record 's'=stop 'g'=recalibrate 'q'=quit"
+            elif self.instrument == "piano":
+                instruction_text = "PIANO | 'r'=record 's'=stop 'p'=recalibrate 'q'=quit"
             else:
-                instruction_text = f"DRUMS | 'r'=record 's'=stop 'q'=quit"
+                instruction_text = "DRUMS | 'r'=record 's'=stop 'q'=quit"
 
             cv2.putText(
                 frame,
@@ -373,8 +528,12 @@ class WebcamRecorder:
             if key == ord('q'):
                 break
             elif key == ord('r'):
-                if not self.is_recording:
-                    self._start_recording(frame, fps)
+                if not self.is_recording and not self.calibration_countdown_active:
+                    if self.instrument == "piano":
+                        # Start calibration countdown for piano
+                        self._start_piano_calibration_countdown()
+                    else:
+                        self._start_recording(frame, self.fps)
             elif key == ord('s'):
                 if self.is_recording:
                     self._stop_recording()
@@ -384,9 +543,15 @@ class WebcamRecorder:
                     self.classifier.clear_hit_log()
                 elif self.instrument == "guitar":
                     self.classifier.clear_strum_log()
+                elif self.instrument == "piano":
+                    self.classifier.clear_hit_log()
             elif key == ord('g') and self.instrument == "guitar":
                 # Recalibrate guitar
                 self.classifier.reset_calibration()
+            elif key == ord('p') and self.instrument == "piano":
+                # Recalibrate piano with countdown (no recording)
+                if not self.calibration_countdown_active and not self.is_recording:
+                    self._start_piano_calibration_countdown(start_recording_after=False)
 
         # Cleanup
         if self.is_recording:
