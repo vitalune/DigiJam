@@ -13,6 +13,7 @@ Usage:
     python generate_video.py --audio output/mixed.wav
     python generate_video.py --config output/session_config_001.json
     python generate_video.py --aspect-ratio 9:16 --resolution 1080p
+    python generate_video.py --audio output/mixed.wav --composite
     python generate_video.py --dry-run -v
 """
 
@@ -21,6 +22,7 @@ import base64
 import json
 import os
 import random
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, asdict
@@ -498,6 +500,13 @@ class MusicVideoGenerator:
         if verbose:
             print(f"\n  Downloading video to {output_path}...")
 
+        # Check if response contains videos
+        if not operation.response or not hasattr(operation.response, 'generated_videos'):
+            raise RuntimeError(f"Video generation failed: No videos in response. Operation: {operation}")
+
+        if not operation.response.generated_videos or len(operation.response.generated_videos) == 0:
+            raise RuntimeError(f"Video generation failed: Empty videos list. Response: {operation.response}")
+
         generated_video = operation.response.generated_videos[0]
         self.client.files.download(file=generated_video.video)
         generated_video.video.save(str(output_path))
@@ -682,6 +691,9 @@ Examples:
     # Include audio analysis for mood-based generation
     python generate_video.py --audio output/mixed.wav
 
+    # Generate with audio analysis and create final composited video
+    python generate_video.py --audio output/mixed.wav --composite --resolution 4k -v
+
     # Portrait mode for mobile/TikTok
     python generate_video.py --aspect-ratio 9:16
 
@@ -696,6 +708,9 @@ Examples:
 
     # Direct prompt mode (skip session config)
     python generate_video.py --prompt "Anime girl playing electric guitar..."
+
+    # Composite with different audio file
+    python generate_video.py --composite --final-audio output/final_mix.mp3
 
     # Preview prompt without generating (dry run)
     python generate_video.py --dry-run -v
@@ -795,7 +810,141 @@ Examples:
         help="Build and display prompt without generating video"
     )
 
+    # Compositing options
+    parser.add_argument(
+        "--composite",
+        action="store_true",
+        help="Composite final video with music audio (loops video if needed)"
+    )
+
+    parser.add_argument(
+        "--final-audio",
+        type=str,
+        default=None,
+        help="Audio file for final composition (default: uses --audio if provided)"
+    )
+
     return parser.parse_args()
+
+
+def get_media_duration(file_path: str) -> float:
+    """
+    Get duration of a media file in seconds using ffprobe.
+
+    Args:
+        file_path: Path to media file
+
+    Returns:
+        Duration in seconds
+    """
+    cmd = [
+        'ffprobe',
+        '-v', 'error',
+        '-show_entries', 'format=duration',
+        '-of', 'default=noprint_wrappers=1:nokey=1',
+        file_path
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return float(result.stdout.strip())
+
+
+def composite_video_with_audio(
+    video_path: Path,
+    audio_path: str,
+    output_path: Optional[Path] = None,
+    verbose: bool = False
+) -> Path:
+    """
+    Composite video with audio, looping video if needed to match audio length.
+
+    Args:
+        video_path: Path to generated video file
+        audio_path: Path to audio file (WAV or MP3)
+        output_path: Output path for final video (auto-generated if None)
+        verbose: Print progress information
+
+    Returns:
+        Path to final composited video
+    """
+    if verbose:
+        print("\n[Final Step] Compositing video with music...")
+
+    # Get durations
+    video_duration = get_media_duration(str(video_path))
+    audio_duration = get_media_duration(audio_path)
+
+    if verbose:
+        print(f"  Video duration: {video_duration:.2f}s")
+        print(f"  Audio duration: {audio_duration:.2f}s")
+
+    # Generate output path if not provided
+    if output_path is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = ensure_output_dir() / f"final_music_video_{timestamp}.mp4"
+
+    # Calculate how many times to loop the video
+    loops_needed = int(audio_duration / video_duration) + 1
+
+    if verbose:
+        print(f"  Looping video {loops_needed}x to match audio length")
+        print(f"  Output: {output_path}")
+
+    # Build ffmpeg command
+    # Strategy: Create a concat filter to loop the video, then overlay audio
+    if loops_needed == 1:
+        # No looping needed, just replace audio
+        cmd = [
+            'ffmpeg',
+            '-i', str(video_path),
+            '-i', audio_path,
+            '-map', '0:v',  # Use video from first input
+            '-map', '1:a',  # Use audio from second input
+            '-c:v', 'copy',  # Copy video codec (no re-encoding)
+            '-c:a', 'aac',   # Encode audio as AAC
+            '-b:a', '192k',  # Audio bitrate
+            '-shortest',     # End when shortest stream ends
+            '-y',            # Overwrite output file
+            str(output_path)
+        ]
+    else:
+        # Loop video to match audio length
+        # Create a filter that loops the video
+        cmd = [
+            'ffmpeg',
+            '-stream_loop', str(loops_needed - 1),  # Loop N-1 times (plays N times total)
+            '-i', str(video_path),
+            '-i', audio_path,
+            '-map', '0:v',
+            '-map', '1:a',
+            '-c:v', 'libx264',  # Re-encode video for looping
+            '-preset', 'medium',
+            '-crf', '23',
+            '-c:a', 'aac',
+            '-b:a', '192k',
+            '-shortest',
+            '-y',
+            str(output_path)
+        ]
+
+    if verbose:
+        print("  Running ffmpeg...")
+
+    # Run ffmpeg
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed: {result.stderr}")
+
+    if verbose:
+        print(f"  ✓ Final video created: {output_path}")
+        file_size = output_path.stat().st_size / (1024 * 1024)
+        print(f"  File size: {file_size:.1f} MB")
+
+    return output_path
 
 
 def main():
@@ -841,16 +990,36 @@ def main():
                 verbose=args.verbose
             )
 
+            # Composite with audio if requested
+            final_video_path = video_path
+            if args.composite:
+                composite_audio = args.final_audio or args.audio
+                if not composite_audio:
+                    print("Error: --composite requires --audio or --final-audio")
+                    return 1
+
+                final_video_path = composite_video_with_audio(
+                    video_path=video_path,
+                    audio_path=composite_audio,
+                    verbose=args.verbose
+                )
+
             if args.json:
                 info = {
                     "mode": "direct_prompt",
                     "prompt": args.prompt,
-                    "output": str(video_path),
+                    "generated_video": str(video_path),
+                    "final_video": str(final_video_path) if args.composite else str(video_path),
+                    "composited": args.composite,
                     "config": asdict(config),
                 }
                 print(json.dumps(info, indent=2))
             else:
-                print(f"\nGenerated video: {video_path}")
+                if args.composite:
+                    print(f"\n✓ Generated video: {video_path}")
+                    print(f"✓ Final composited video: {final_video_path}")
+                else:
+                    print(f"\nGenerated video: {video_path}")
 
         else:
             # Session config mode
@@ -865,6 +1034,21 @@ def main():
             )
 
             if video_path:
+                # Composite with audio if requested
+                final_video_path = video_path
+                if args.composite:
+                    # Determine which audio to use
+                    composite_audio = args.final_audio or args.audio
+                    if not composite_audio:
+                        print("Error: --composite requires --audio or --final-audio")
+                        return 1
+
+                    final_video_path = composite_video_with_audio(
+                        video_path=video_path,
+                        audio_path=composite_audio,
+                        verbose=args.verbose
+                    )
+
                 if args.json:
                     # Load session config for JSON output
                     if args.config:
@@ -879,12 +1063,18 @@ def main():
                         "bpm": session_config.bpm if session_config else None,
                         "key": session_config.key if session_config else None,
                         "audio_analyzed": args.audio is not None,
-                        "output": str(video_path),
+                        "generated_video": str(video_path),
+                        "final_video": str(final_video_path) if args.composite else str(video_path),
+                        "composited": args.composite,
                         "config": asdict(config),
                     }
                     print(json.dumps(info, indent=2))
                 else:
-                    print(f"\nGenerated video: {video_path}")
+                    if args.composite:
+                        print(f"\n✓ Generated video: {video_path}")
+                        print(f"✓ Final composited video: {final_video_path}")
+                    else:
+                        print(f"\nGenerated video: {video_path}")
 
         return 0
 

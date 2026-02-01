@@ -32,5 +32,10 @@ google-genai>=0.8.0
 # Environment variables
 python-dotenv>=1.0.0
 
+# API Server (for frontend integration)
+fastapi>=0.109.0
+uvicorn>=0.27.0
+python-multipart>=0.0.6
+
 # Note: The objc warnings about duplicate OpenCV classes are harmless
 # and do not affect functionality.

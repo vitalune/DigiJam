@@ -27,6 +27,7 @@ from typing import Optional, Dict, Any, List, Tuple
 
 import numpy as np
 import requests
+import soundfile as sf
 from scipy.io import wavfile
 from scipy.signal import resample
 from dotenv import load_dotenv
@@ -308,7 +309,7 @@ class MelodyMixer:
         pcm_channels: int = 2
     ) -> np.ndarray:
         """
-        Load audio from bytes (WAV/PCM) as float32 numpy array.
+        Load audio from bytes (WAV/PCM/MP3) as float32 numpy array.
 
         Args:
             audio_bytes: Raw audio bytes
@@ -319,9 +320,10 @@ class MelodyMixer:
         Returns:
             Audio as float32 numpy array
         """
-        # Detect actual format: check for WAV header regardless of format_hint
-        # WAV files start with "RIFF"
+        # Detect actual format from magic bytes
         has_wav_header = len(audio_bytes) >= 4 and audio_bytes[:4] == b'RIFF'
+        has_mp3_id3 = len(audio_bytes) >= 3 and audio_bytes[:3] == b'ID3'
+        has_mp3_sync = len(audio_bytes) >= 2 and audio_bytes[0] == 0xFF and (audio_bytes[1] & 0xE0) == 0xE0
 
         if has_wav_header:
             # Parse as WAV file
@@ -347,6 +349,26 @@ class MelodyMixer:
             if rate != self.sample_rate:
                 new_len = int(len(data) * self.sample_rate / rate)
                 data = resample(data, new_len).astype(np.float32)
+
+        elif has_mp3_id3 or has_mp3_sync:
+            # MP3 file - use soundfile to decode
+            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
+                tmp.write(audio_bytes)
+                tmp_path = tmp.name
+
+            try:
+                data, rate = sf.read(tmp_path, dtype='float32')
+
+                # Convert to mono if stereo
+                if len(data.shape) > 1:
+                    data = data.mean(axis=1)
+
+                # Resample if needed
+                if rate != self.sample_rate:
+                    new_len = int(len(data) * self.sample_rate / rate)
+                    data = resample(data, new_len).astype(np.float32)
+            finally:
+                os.unlink(tmp_path)
 
         elif format_hint.startswith("pcm_"):
             # Raw PCM - 16-bit signed little-endian
@@ -406,16 +428,24 @@ class MelodyMixer:
 
         return mixed
 
-    def normalize(self, audio: np.ndarray, target_peak: float = 0.95) -> np.ndarray:
-        """Normalize audio to target peak level."""
+    def normalize(self, audio: np.ndarray, target_peak: float = 0.95, max_gain: float = 10.0) -> np.ndarray:
+        """Normalize audio to target peak level with gain limiting."""
         peak = np.max(np.abs(audio))
         if peak > 0:
-            audio = audio * (target_peak / peak)
+            gain = target_peak / peak
+            # Limit maximum amplification to prevent boosting noise into static
+            gain = min(gain, max_gain)
+            audio = audio * gain
+        # Clip to valid range to prevent overflow
+        audio = np.clip(audio, -1.0, 1.0)
         return audio
 
     def export(self, audio: np.ndarray, filepath: Path) -> None:
         """Export audio to WAV file."""
         filepath.parent.mkdir(parents=True, exist_ok=True)
+
+        # Clip to valid range before conversion to prevent int16 overflow
+        audio = np.clip(audio, -1.0, 1.0)
 
         # Convert to 16-bit PCM
         audio_int16 = (audio * 32767).astype(np.int16)

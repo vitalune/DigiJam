@@ -30,9 +30,11 @@ import scipy.signal as sig
 # PSOLA library for pitch shifting
 try:
     import psola
+    PSOLA_AVAILABLE = True
 except ImportError:
-    print("Error: psola library required. Install with: pip install psola")
-    sys.exit(1)
+    PSOLA_AVAILABLE = False
+    psola = None
+    print("Warning: psola library not installed. Autotune will be disabled. Install with: pip install psola")
 
 
 SEMITONES_IN_OCTAVE = 12
@@ -353,6 +355,10 @@ class PitchShifter:
         Returns:
             Pitch-shifted audio
         """
+        if not PSOLA_AVAILABLE:
+            print("Warning: psola not available, returning original audio")
+            return audio
+
         return psola.vocode(
             audio,
             sample_rate=int(sr),
@@ -463,6 +469,22 @@ AVAILABLE_KEYS = [
     "C:min", "C#:min", "D:min", "D#:min", "E:min", "F:min",
     "F#:min", "G:min", "G#:min", "A:min", "A#:min", "B:min",
 ]
+
+
+def autotune_audio(input_path: str, output_path: str, config: AutotuneConfig) -> str:
+    """
+    Simple wrapper function to autotune an audio file.
+
+    Args:
+        input_path: Path to input audio file
+        output_path: Path to save output audio file
+        config: Autotune configuration
+
+    Returns:
+        Path to the saved output file
+    """
+    autotuner = Autotuner(config)
+    return autotuner.process_file(input_path, output_path)
 
 
 def display_available_keys() -> None:
