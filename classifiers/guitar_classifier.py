@@ -43,7 +43,8 @@ class GuitarClassifier:
         min_detection_confidence: float = 0.5,
         min_tracking_confidence: float = 0.5,
         max_persons: int = 4,
-        on_strum_callback: Optional[Callable[[StrumEvent], None]] = None
+        on_strum_callback: Optional[Callable[[StrumEvent], None]] = None,
+        tracker: Optional[MultiPersonTracker] = None
     ):
         """
         Initialize guitar classifier.
@@ -56,16 +57,23 @@ class GuitarClassifier:
             min_tracking_confidence: Minimum confidence for tracking
             max_persons: Maximum number of people to track
             on_strum_callback: Optional callback when strum is detected
+            tracker: Optional external tracker (for multi-player sessions)
         """
         self.dominant_hand = dominant_hand
         self.key = key
 
-        self.tracker = MultiPersonTracker(
-            model_complexity=model_complexity,
-            min_detection_confidence=min_detection_confidence,
-            min_tracking_confidence=min_tracking_confidence,
-            max_persons=max_persons
-        )
+        # Use external tracker if provided, else create own
+        if tracker is not None:
+            self.tracker = tracker
+            self._owns_tracker = False
+        else:
+            self.tracker = MultiPersonTracker(
+                model_complexity=model_complexity,
+                min_detection_confidence=min_detection_confidence,
+                min_tracking_confidence=min_tracking_confidence,
+                max_persons=max_persons
+            )
+            self._owns_tracker = True
 
         self.strum_detector = StrumDetector(dominant_hand=dominant_hand)
         self.on_strum_callback = on_strum_callback
@@ -395,6 +403,63 @@ class GuitarClassifier:
         self.end_time = None
         print("Strum log cleared")
 
+    def process_poses(self, persons: List[PersonPose], current_time: float = None) -> List[StrumEvent]:
+        """
+        Process pre-detected poses (for multi-player mode with shared tracker).
+
+        Args:
+            persons: List of PersonPose objects from shared tracker
+            current_time: Timestamp for strum detection
+
+        Returns:
+            List of StrumEvent objects detected
+        """
+        if current_time is None:
+            current_time = time.time()
+
+        self._last_persons = persons
+        strums_this_frame = []
+
+        for person in persons:
+            player_id = person.player_id
+
+            # Get wrist world coordinates
+            left_wrist, right_wrist = self.tracker.get_wrist_world_coords(person)
+
+            # Need both hands for guitar tracking
+            if not left_wrist or not right_wrist:
+                continue
+
+            # Determine which is strum/fret based on dexterity
+            if self.dominant_hand == "right":
+                strum_wrist = right_wrist
+                fret_wrist = left_wrist
+            else:
+                strum_wrist = left_wrist
+                fret_wrist = right_wrist
+
+            # Update strum detector
+            strum = self.strum_detector.update(
+                player_id=player_id,
+                strum_hand_x=strum_wrist["x"],
+                strum_hand_y=strum_wrist["y"],
+                strum_hand_z=strum_wrist["z"],
+                fret_hand_x=fret_wrist["x"],
+                fret_hand_y=fret_wrist["y"],
+                fret_hand_z=fret_wrist["z"],
+                current_time=current_time
+            )
+
+            if strum:
+                strums_this_frame.append(strum)
+                self._record_strum(strum)
+
+        # Decay strum display counters
+        self._decay_strum_display()
+
+        return strums_this_frame
+
     def close(self):
         """Release resources."""
-        self.tracker.close()
+        if self._owns_tracker:
+            self.tracker.close()

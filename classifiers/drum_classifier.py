@@ -38,7 +38,8 @@ class DrumClassifier:
         min_detection_confidence: float = 0.5,
         min_tracking_confidence: float = 0.5,
         max_persons: int = 4,
-        on_hit_callback: Optional[Callable[[HitEvent], None]] = None
+        on_hit_callback: Optional[Callable[[HitEvent], None]] = None,
+        tracker: Optional[MultiPersonTracker] = None
     ):
         """
         Initialize drum classifier.
@@ -50,15 +51,22 @@ class DrumClassifier:
             min_tracking_confidence: Minimum confidence for tracking
             max_persons: Maximum number of people to track
             on_hit_callback: Optional callback when hit is detected
+            tracker: Optional external tracker (for multi-player sessions)
         """
         self.dominant_hand = dominant_hand
 
-        self.tracker = MultiPersonTracker(
-            model_complexity=model_complexity,
-            min_detection_confidence=min_detection_confidence,
-            min_tracking_confidence=min_tracking_confidence,
-            max_persons=max_persons
-        )
+        # Use external tracker if provided, else create own
+        if tracker is not None:
+            self.tracker = tracker
+            self._owns_tracker = False
+        else:
+            self.tracker = MultiPersonTracker(
+                model_complexity=model_complexity,
+                min_detection_confidence=min_detection_confidence,
+                min_tracking_confidence=min_tracking_confidence,
+                max_persons=max_persons
+            )
+            self._owns_tracker = True
 
         self.hit_detector = HitDetector(dominant_hand=dominant_hand)
         self.on_hit_callback = on_hit_callback
@@ -392,6 +400,120 @@ class DrumClassifier:
         self.end_time = None
         print("Hit log cleared")
 
+    def process_poses(self, persons: List[PersonPose], current_time: float = None) -> List[HitEvent]:
+        """
+        Process pre-detected poses (for multi-player mode with shared tracker).
+
+        Args:
+            persons: List of PersonPose objects from shared tracker
+            current_time: Timestamp for hit detection
+
+        Returns:
+            List of HitEvent objects detected
+        """
+        if current_time is None:
+            current_time = time.time()
+
+        self._last_persons = persons
+        hits_this_frame = []
+
+        for person in persons:
+            player_id = person.player_id
+
+            # Get body reference points and wrist coordinates
+            body_refs = self.tracker.get_body_references(person)
+            left_wrist, right_wrist = self.tracker.get_wrist_world_coords(person)
+            left_foot, right_foot = self.tracker.get_foot_world_coords(person)
+
+            if body_refs:
+                self._last_body_refs[player_id] = body_refs
+
+            # Get normalized y for body-relative zone classification
+            wrist_y = self.tracker.get_wrist_normalized_y(person)
+
+            # Update zone tracking for display (even without hits)
+            self.current_zones[player_id] = {"left": None, "right": None}
+            if body_refs and wrist_y:
+                if left_wrist and wrist_y.get("left") is not None:
+                    self.current_zones[player_id]["left"] = self.hit_detector.get_current_zone(
+                        hand="left",
+                        wrist_y_normalized=wrist_y["left"],
+                        body_refs=body_refs,
+                        world_x=left_wrist["x"]
+                    )
+                if right_wrist and wrist_y.get("right") is not None:
+                    self.current_zones[player_id]["right"] = self.hit_detector.get_current_zone(
+                        hand="right",
+                        wrist_y_normalized=wrist_y["right"],
+                        body_refs=body_refs,
+                        world_x=right_wrist["x"]
+                    )
+
+            # Process left wrist
+            if left_wrist and body_refs and wrist_y:
+                hit = self.hit_detector.update(
+                    player_id=player_id,
+                    hand="left",
+                    world_x=left_wrist["x"],
+                    world_y=left_wrist["y"],
+                    world_z=left_wrist["z"],
+                    body_refs=body_refs,
+                    wrist_y_normalized=wrist_y.get("left"),
+                    current_time=current_time
+                )
+                if hit:
+                    hits_this_frame.append(hit)
+                    self._record_hit(hit)
+
+            # Process right wrist
+            if right_wrist and body_refs and wrist_y:
+                hit = self.hit_detector.update(
+                    player_id=player_id,
+                    hand="right",
+                    world_x=right_wrist["x"],
+                    world_y=right_wrist["y"],
+                    world_z=right_wrist["z"],
+                    body_refs=body_refs,
+                    wrist_y_normalized=wrist_y.get("right"),
+                    current_time=current_time
+                )
+                if hit:
+                    hits_this_frame.append(hit)
+                    self._record_hit(hit)
+
+            # Process feet for kicks
+            if left_foot:
+                kick = self.hit_detector.update_foot(
+                    player_id=player_id,
+                    foot="left_foot",
+                    world_x=left_foot["x"],
+                    world_y=left_foot["y"],
+                    world_z=left_foot["z"],
+                    current_time=current_time
+                )
+                if kick:
+                    hits_this_frame.append(kick)
+                    self._record_hit(kick)
+
+            if right_foot:
+                kick = self.hit_detector.update_foot(
+                    player_id=player_id,
+                    foot="right_foot",
+                    world_x=right_foot["x"],
+                    world_y=right_foot["y"],
+                    world_z=right_foot["z"],
+                    current_time=current_time
+                )
+                if kick:
+                    hits_this_frame.append(kick)
+                    self._record_hit(kick)
+
+        # Decay action display counters
+        self._decay_action_display()
+
+        return hits_this_frame
+
     def close(self):
         """Release resources."""
-        self.tracker.close()
+        if self._owns_tracker:
+            self.tracker.close()

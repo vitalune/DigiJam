@@ -77,15 +77,25 @@ def load_drums_session(filepath: str) -> Tuple[List[AudioEvent], float]:
         data = json.load(f)
 
     events = []
-    for hit in data.get('hits', []):
-        # Handle both old (ISO string) and new (relative float) timestamp formats
-        timestamp = hit.get('timestamp', 0)
-        if isinstance(timestamp, str):
-            # Old format - skip or try to parse
-            # For now, we'll set to 0 and rely on end_time being None
-            timestamp = 0.0
+    first_timestamp = None
+    # Support both 'hits' (single-player) and 'events' (multi-player) keys
+    raw_events = data.get('hits', []) or data.get('events', [])
+    for hit in raw_events:
+        # Handle various timestamp formats
+        # Priority: raw_timestamp (unix) > timestamp (if float) > timestamp (if ISO string)
+        if 'raw_timestamp' in hit:
+            timestamp = float(hit['raw_timestamp'])
         else:
-            timestamp = float(timestamp)
+            timestamp = hit.get('timestamp', 0)
+            if isinstance(timestamp, str):
+                timestamp = 0.0
+            else:
+                timestamp = float(timestamp)
+
+        # Track first timestamp for relative time calculation
+        if first_timestamp is None:
+            first_timestamp = timestamp
+        timestamp = timestamp - first_timestamp
 
         # Normalize velocity (raw values range ~0.1 to 3.5)
         raw_velocity = hit.get('velocity', 0.5)
@@ -132,13 +142,24 @@ def load_guitar_session(filepath: str, key: str = None) -> Tuple[List[AudioEvent
     session_key = key or data.get('key', DEFAULT_KEY)
 
     events = []
-    for strum in data.get('strums', []):
-        # Handle both timestamp formats
-        timestamp = strum.get('timestamp', 0)
-        if isinstance(timestamp, str):
-            timestamp = 0.0
+    first_timestamp = None
+    # Support both 'strums' (single-player) and 'events' (multi-player) keys
+    raw_events = data.get('strums', []) or data.get('events', [])
+    for strum in raw_events:
+        # Handle various timestamp formats
+        if 'raw_timestamp' in strum:
+            timestamp = float(strum['raw_timestamp'])
         else:
-            timestamp = float(timestamp)
+            timestamp = strum.get('timestamp', 0)
+            if isinstance(timestamp, str):
+                timestamp = 0.0
+            else:
+                timestamp = float(timestamp)
+
+        # Track first timestamp for relative time calculation
+        if first_timestamp is None:
+            first_timestamp = timestamp
+        timestamp = timestamp - first_timestamp
 
         # Check for zone (new format) or fret (old format)
         if 'zone' in strum:
@@ -195,13 +216,24 @@ def load_piano_session(filepath: str, key: str = None) -> Tuple[List[AudioEvent]
     session_key = key or data.get('key', DEFAULT_KEY)
 
     events = []
-    for hit in data.get('hits', []):
-        # Handle both timestamp formats
-        timestamp = hit.get('timestamp', 0)
-        if isinstance(timestamp, str):
-            timestamp = 0.0
+    first_timestamp = None
+    # Support both 'hits' (single-player) and 'events' (multi-player) keys
+    raw_events = data.get('hits', []) or data.get('events', [])
+    for hit in raw_events:
+        # Handle various timestamp formats
+        if 'raw_timestamp' in hit:
+            timestamp = float(hit['raw_timestamp'])
         else:
-            timestamp = float(timestamp)
+            timestamp = hit.get('timestamp', 0)
+            if isinstance(timestamp, str):
+                timestamp = 0.0
+            else:
+                timestamp = float(timestamp)
+
+        # Track first timestamp for relative time calculation
+        if first_timestamp is None:
+            first_timestamp = timestamp
+        timestamp = timestamp - first_timestamp
 
         action = hit.get('action', 'chord')
         chord_zone = hit.get('chord', 1)

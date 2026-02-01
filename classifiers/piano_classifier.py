@@ -43,7 +43,9 @@ class PianoClassifier:
         min_detection_confidence: float = 0.5,
         min_tracking_confidence: float = 0.5,
         max_persons: int = 4,
-        on_hit_callback: Optional[Callable[[PianoEvent], None]] = None
+        on_hit_callback: Optional[Callable[[PianoEvent], None]] = None,
+        tracker: Optional[MultiPersonTracker] = None,
+        auto_calibrate: bool = False
     ):
         """
         Initialize piano classifier.
@@ -55,18 +57,26 @@ class PianoClassifier:
             min_tracking_confidence: Minimum confidence for tracking
             max_persons: Maximum number of people to track
             on_hit_callback: Optional callback when piano hit is detected
+            tracker: Optional external tracker (for multi-player sessions)
+            auto_calibrate: If True, auto-calibrate on first frame (for multi-player)
         """
         self.key = key
 
-        self.tracker = MultiPersonTracker(
-            model_complexity=model_complexity,
-            min_detection_confidence=min_detection_confidence,
-            min_tracking_confidence=min_tracking_confidence,
-            max_persons=max_persons
-        )
+        # Use external tracker if provided, else create own
+        if tracker is not None:
+            self.tracker = tracker
+            self._owns_tracker = False
+        else:
+            self.tracker = MultiPersonTracker(
+                model_complexity=model_complexity,
+                min_detection_confidence=min_detection_confidence,
+                min_tracking_confidence=min_tracking_confidence,
+                max_persons=max_persons
+            )
+            self._owns_tracker = True
 
-        # Disable auto-calibration - require manual calibration via countdown
-        self.piano_detector = PianoDetector(auto_calibrate=False)
+        # Auto-calibrate for multi-player, manual calibration for single-player
+        self.piano_detector = PianoDetector(auto_calibrate=auto_calibrate)
         self.on_hit_callback = on_hit_callback
 
         # Store last known hand positions for calibration
@@ -338,14 +348,14 @@ class PianoClassifier:
         self._draw_zone_indicator(frame, w, h)
 
     def _draw_zone_indicator(self, frame, w: int, h: int):
-        """Draw visual zone indicator at bottom of screen."""
+        """Draw visual zone indicator above guitar zones (for multi-player)."""
         if not self.piano_detector.is_calibrated:
             return
 
-        # Draw 7 zones as colored boxes
+        # Draw 7 zones as colored boxes (positioned above guitar zones)
         zone_width = w // 7
-        y_start = h - 40
-        y_end = h - 10
+        y_start = h - 80
+        y_end = h - 50
 
         for i in range(7):
             x_start = i * zone_width
@@ -445,6 +455,61 @@ class PianoClassifier:
         self.end_time = None
         print("Piano hit log cleared")
 
+    def process_poses(self, persons: List[PersonPose], current_time: float = None) -> List[PianoEvent]:
+        """
+        Process pre-detected poses (for multi-player mode with shared tracker).
+
+        Args:
+            persons: List of PersonPose objects from shared tracker
+            current_time: Timestamp for hit detection
+
+        Returns:
+            List of PianoEvent objects detected
+        """
+        if current_time is None:
+            current_time = time.time()
+
+        self._last_persons = persons
+        hits_this_frame = []
+
+        for person in persons:
+            player_id = person.player_id
+
+            # Get wrist world coordinates
+            left_wrist, right_wrist = self.tracker.get_wrist_world_coords(person)
+
+            # Store last known positions for calibration
+            if left_wrist:
+                self._last_left_wrist = left_wrist
+            if right_wrist:
+                self._last_right_wrist = right_wrist
+
+            # Need both hands for piano
+            if not left_wrist or not right_wrist:
+                continue
+
+            # Update piano detector
+            events = self.piano_detector.update(
+                player_id=player_id,
+                left_hand_x=left_wrist["x"],
+                left_hand_y=left_wrist["y"],
+                left_hand_z=left_wrist["z"],
+                right_hand_x=right_wrist["x"],
+                right_hand_y=right_wrist["y"],
+                right_hand_z=right_wrist["z"],
+                current_time=current_time
+            )
+
+            for event in events:
+                hits_this_frame.append(event)
+                self._record_hit(event)
+
+        # Decay hit display counters
+        self._decay_hit_display()
+
+        return hits_this_frame
+
     def close(self):
         """Release resources."""
-        self.tracker.close()
+        if self._owns_tracker:
+            self.tracker.close()

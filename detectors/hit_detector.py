@@ -79,8 +79,8 @@ class HitDetector:
     MIN_REVERSAL_VELOCITY = -0.03  # Minimum upward velocity to confirm reversal
     SNARE_CENTER_THRESHOLD = 0.40  # Max x-distance from center for snare (meters)
 
-    # Kick detection parameters - tuned for easier triggering
-    KICK_VELOCITY_THRESHOLD = 0.10  # Lower threshold for foot motion
+    # Kick detection parameters - requires explicit foot motion
+    KICK_VELOCITY_THRESHOLD = 0.20  # Threshold for foot motion (higher = more explicit)
     KICK_DEBOUNCE_TIME = 0.15       # Debounce for kicks
 
     def __init__(self, dominant_hand: str = "right"):

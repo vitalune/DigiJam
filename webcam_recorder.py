@@ -2,6 +2,7 @@
 Webcam recording with real-time instrument action classification.
 Supports drums, guitar, and piano with recording sessions.
 Supports all 24 major/minor keys for guitar and piano.
+Supports multi-player sessions with role assignment.
 """
 import cv2
 import os
@@ -17,6 +18,7 @@ from detectors.hit_detector import HitEvent
 from detectors.strum_detector import StrumEvent
 from detectors.piano_detector import PianoEvent
 from audio.music_theory import AVAILABLE_KEYS, DEFAULT_KEY
+from session_config import SessionConfig, PlayerConfig, create_single_player_config
 
 
 class WebcamRecorder:
@@ -385,6 +387,123 @@ class WebcamRecorder:
             except ValueError:
                 print("Please enter a valid number")
 
+    @staticmethod
+    def prompt_num_users() -> int:
+        """
+        Prompt user for number of players in the session.
+
+        Returns:
+            Number of players (1, 2, or 3)
+        """
+        print("\n" + "=" * 50)
+        print("MULTI-PLAYER SESSION SETUP")
+        print("=" * 50)
+        print("\nHow many users will be playing?")
+        print("  1. Single player (default)")
+        print("  2. Two players")
+        print("  3. Three players")
+        print("-" * 50)
+
+        while True:
+            try:
+                choice = input("\nNumber of users [1-3]: ").strip()
+                if choice == "":
+                    return 1
+                num = int(choice)
+                if 1 <= num <= 3:
+                    return num
+                print("Please enter 1, 2, or 3")
+            except ValueError:
+                print("Please enter a valid number")
+
+    @staticmethod
+    def prompt_instruments(num_users: int) -> List[str]:
+        """
+        Prompt user to select instruments for the session.
+
+        For 3 players, all instruments are automatically assigned.
+        For 2 players, user selects which melodic instrument to use.
+        For 1 player, uses existing single instrument selection.
+
+        Args:
+            num_users: Number of players
+
+        Returns:
+            List of instruments in order of assignment
+        """
+        if num_users == 3:
+            print("\n" + "=" * 50)
+            print("INSTRUMENT ASSIGNMENT (3 PLAYERS)")
+            print("=" * 50)
+            print("\nWith 3 players, all instruments are used:")
+            print("  - Drums (center position)")
+            print("  - Guitar (position based on handedness)")
+            print("  - Piano (position based on handedness)")
+            print("-" * 50)
+            return ["drums", "guitar", "piano"]
+
+        elif num_users == 2:
+            print("\n" + "=" * 50)
+            print("INSTRUMENT SELECTION (2 PLAYERS)")
+            print("=" * 50)
+            print("\nWith 2 players:")
+            print("  - Left player: Drums")
+            print("  - Right player: Choose below")
+            print("\nWhich melodic instrument for the right player?")
+            print("  1. Guitar (default)")
+            print("  2. Piano")
+            print("-" * 50)
+
+            while True:
+                try:
+                    choice = input("\nSelect [1-2]: ").strip()
+                    if choice == "" or choice == "1":
+                        return ["drums", "guitar"]
+                    if choice == "2":
+                        return ["drums", "piano"]
+                    print("Please enter 1 or 2")
+                except ValueError:
+                    print("Please enter a valid number")
+
+        else:  # Single player
+            # Use existing single instrument prompt
+            instrument = WebcamRecorder.prompt_instrument()
+            return [instrument]
+
+    @staticmethod
+    def prompt_guitar_handedness() -> str:
+        """
+        Prompt for guitar player's handedness.
+
+        This affects role assignment for multi-player sessions:
+        - Right-handed: Guitarist on the right, Pianist on the left
+        - Left-handed: Guitarist on the left, Pianist on the right
+
+        Returns:
+            "right" or "left"
+        """
+        print("\n" + "=" * 50)
+        print("GUITAR PLAYER HANDEDNESS")
+        print("=" * 50)
+        print("\nIs the guitar player right-handed or left-handed?")
+        print("  1. Right-handed (default)")
+        print("  2. Left-handed")
+        print("\nThis affects position assignment:")
+        print("  - Right-handed: Guitarist on RIGHT, Pianist on LEFT")
+        print("  - Left-handed: Guitarist on LEFT, Pianist on RIGHT")
+        print("-" * 50)
+
+        while True:
+            try:
+                choice = input("\nSelect [1-2]: ").strip()
+                if choice == "" or choice == "1":
+                    return "right"
+                if choice == "2":
+                    return "left"
+                print("Please enter 1 or 2")
+            except ValueError:
+                print("Please enter a valid number")
+
     def run(self, skip_prompt: bool = False):
         """
         Run the webcam recorder.
@@ -628,28 +747,353 @@ class WebcamRecorder:
 
 def main():
     """Main entry point with instrument, dexterity, and key selection."""
-    # Prompt for instrument
-    instrument = WebcamRecorder.prompt_instrument()
-    print(f"\nSelected: {instrument.upper()}")
+    # First, ask how many users
+    num_users = WebcamRecorder.prompt_num_users()
+    print(f"\nPlayers: {num_users}")
 
-    # Prompt for dexterity
+    if num_users == 1:
+        # Single player mode - existing flow
+        instruments = WebcamRecorder.prompt_instruments(num_users)
+        instrument = instruments[0]
+        print(f"\nSelected: {instrument.upper()}")
+
+        # Prompt for dexterity
+        dominant_hand = WebcamRecorder.prompt_dexterity()
+        print(f"\nDominant hand: {dominant_hand.upper()}")
+
+        # Prompt for key (only for guitar and piano)
+        if instrument in ["guitar", "piano"]:
+            key = WebcamRecorder.prompt_key()
+            print(f"\nKey: {key}")
+        else:
+            key = DEFAULT_KEY
+
+        recorder = WebcamRecorder(
+            output_dir="output",
+            instrument=instrument,
+            dominant_hand=dominant_hand,
+            key=key
+        )
+        recorder.run()
+
+    else:
+        # Multi-player mode
+        run_multi_player_session(num_users)
+
+
+def run_multi_player_session(num_users: int):
+    """
+    Run a multi-player session with the specified number of users.
+
+    Args:
+        num_users: Number of players (2 or 3)
+    """
+    from multi_person import get_session_manager, RoleAssigner
+    from multi_person.yolo_detector import is_yolo_available
+    MultiSessionManager = get_session_manager()
+
+    # Check YOLO availability
+    if not is_yolo_available():
+        print("\n" + "=" * 50)
+        print("WARNING: Multi-person detection requires YOLO")
+        print("Install with: pip install ultralytics")
+        print("Falling back to single-player mode...")
+        print("=" * 50)
+        main()  # Restart with single player
+        return
+
+    # Prompt for instruments
+    instruments = WebcamRecorder.prompt_instruments(num_users)
+    print(f"\nInstruments: {', '.join(i.upper() for i in instruments)}")
+
+    # Prompt for guitar handedness if guitar is involved
+    guitar_handedness = "right"
+    if "guitar" in instruments and num_users > 1:
+        guitar_handedness = WebcamRecorder.prompt_guitar_handedness()
+        print(f"\nGuitar handedness: {guitar_handedness.upper()}")
+
+    # Prompt for dexterity (for single dominant hand setting)
     dominant_hand = WebcamRecorder.prompt_dexterity()
-    print(f"\nDominant hand: {dominant_hand.upper()}")
+    print(f"\nDefault dominant hand: {dominant_hand.upper()}")
 
-    # Prompt for key (only for guitar and piano)
-    if instrument in ["guitar", "piano"]:
+    # Prompt for key if any melodic instrument
+    if "guitar" in instruments or "piano" in instruments:
         key = WebcamRecorder.prompt_key()
-        print(f"\nKey: {key}")
+        print(f"\nMusical key: {key}")
     else:
         key = DEFAULT_KEY
 
-    recorder = WebcamRecorder(
-        output_dir="output",
-        instrument=instrument,
-        dominant_hand=dominant_hand,
+    # Create session config
+    config = SessionConfig(
+        num_players=num_users,
+        instruments=instruments,
+        guitar_handedness=guitar_handedness,
         key=key
     )
-    recorder.run()
+
+    # Show role assignment preview
+    assigner = RoleAssigner(num_users, instruments, guitar_handedness)
+    print("\n" + "=" * 50)
+    print("ROLE ASSIGNMENT PREVIEW")
+    print("=" * 50)
+    print(assigner.describe_roles())
+    print("=" * 50)
+
+    # Instructions
+    print("\n" + "=" * 50)
+    print("MULTI-PLAYER SESSION")
+    print("=" * 50)
+    print(f"\nPlayers: {num_users}")
+    print(f"Instruments: {', '.join(i.upper() for i in instruments)}")
+    print(f"Key: {key}")
+    print("\nInstructions:")
+    print("  1. All players stand in position (sorted left to right)")
+    print("  2. Press 'c' to calibrate roles when everyone is visible")
+    print("  3. Roles will be locked based on x-position")
+    print("  4. Press 'r' to start recording")
+    print("  5. Press 's' to stop recording")
+    print("  6. Press 'q' to quit")
+    print("=" * 50 + "\n")
+
+    # Initialize session manager
+    session_manager = MultiSessionManager(config)
+    session_manager.initialize_classifiers()
+
+    # Run multi-player loop
+    _run_multi_player_loop(session_manager, config)
+
+
+def _run_multi_player_loop(session_manager, config: SessionConfig):
+    """
+    Main loop for multi-player session.
+
+    Args:
+        session_manager: MultiSessionManager instance
+        config: Session configuration
+    """
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Error: Could not open webcam")
+        return
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 0:
+        fps = 30.0
+
+    # Recording state
+    is_recording = False
+    session_start_time = None
+    frame_count = 0
+    video_writer = None
+    output_dir = "output"
+    os.makedirs(output_dir, exist_ok=True)
+
+    print("Starting webcam feed...")
+    print("Press 'c' to calibrate roles when all players are visible")
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            print("Error: Could not read frame")
+            break
+
+        current_time = time.time()
+
+        # Process frame
+        events = session_manager.process_frame(frame, current_time)
+
+        # Draw overlay
+        session_manager.draw_overlay(frame)
+
+        # Draw calibration/status indicator
+        h, w = frame.shape[:2]
+        if session_manager.awaiting_calibration:
+            cv2.putText(
+                frame,
+                "WAITING FOR CALIBRATION - Press 'c' when all players visible",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 255),
+                2
+            )
+
+            # Show number of detected persons
+            num_detected = len(session_manager.tracker.last_persons)
+            status_color = (0, 255, 0) if num_detected == config.num_players else (0, 165, 255)
+            cv2.putText(
+                frame,
+                f"Detected: {num_detected}/{config.num_players} players",
+                (10, 60),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                status_color,
+                2
+            )
+        elif is_recording:
+            # Recording indicator
+            cv2.circle(frame, (30, 30), 15, (0, 0, 255), -1)
+            cv2.putText(
+                frame,
+                "REC",
+                (55, 38),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 0, 255),
+                2
+            )
+
+            elapsed = time.time() - session_start_time
+            total_events = sum(len(e) for e in events.values())
+            cv2.putText(
+                frame,
+                f"{elapsed:.1f}s | {frame_count} frames | {total_events} events",
+                (10, 60),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 0, 255),
+                1
+            )
+
+            video_writer.write(frame)
+            frame_count += 1
+        else:
+            cv2.putText(
+                frame,
+                "READY - Press 'r' to record",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 0),
+                2
+            )
+
+        # Draw multi-player status at bottom
+        status_text = f"MULTI-PLAYER | {config.num_players} users | Key: {config.key} | 'q'=quit"
+        cv2.putText(
+            frame,
+            status_text,
+            (10, h - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (200, 200, 200),
+            1
+        )
+
+        cv2.imshow('Multi-Player Session', frame)
+
+        # Handle key presses
+        key = cv2.waitKey(1) & 0xFF
+
+        if key == ord('q'):
+            break
+
+        elif key == ord('c'):
+            # Calibrate roles
+            if session_manager.awaiting_calibration:
+                persons = session_manager.tracker.last_persons
+                if len(persons) == config.num_players:
+                    if session_manager.calibrate_roles(persons):
+                        session_manager.lock_roles()
+                        print("\nRoles calibrated and locked!")
+                        print(session_manager.describe_session())
+                    else:
+                        print("Calibration failed - ensure all players are visible")
+                else:
+                    print(f"Need {config.num_players} players, detected {len(persons)}")
+
+        elif key == ord('r'):
+            if not is_recording and session_manager.calibration_complete:
+                # Start recording
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                video_path = os.path.join(output_dir, f"multi_session_{timestamp}.mp4")
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                video_writer = cv2.VideoWriter(video_path, fourcc, fps, (w, h))
+
+                is_recording = True
+                session_start_time = time.time()
+                frame_count = 0
+                session_manager.clear_events()
+
+                print(f"\nRecording started: {video_path}")
+
+        elif key == ord('s'):
+            if is_recording:
+                # Stop recording
+                is_recording = False
+                if video_writer:
+                    video_writer.release()
+                    video_writer = None
+
+                # Save per-player events
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                _save_multi_player_session(session_manager, output_dir, timestamp, config)
+
+                print("\nRecording stopped")
+
+        elif key == ord('u'):
+            # Unlock roles for reassignment
+            if session_manager.role_locked:
+                session_manager.unlock_roles()
+                print("Roles unlocked - will reassign on next calibration")
+
+    # Cleanup
+    if is_recording and video_writer:
+        video_writer.release()
+
+    cap.release()
+    cv2.destroyAllWindows()
+    session_manager.close()
+    print("\nMulti-player session ended")
+
+
+def _save_multi_player_session(session_manager, output_dir: str, timestamp: str, config: SessionConfig):
+    """
+    Save per-player session data to JSON files.
+
+    Args:
+        session_manager: MultiSessionManager with recorded events
+        output_dir: Directory to save files
+        timestamp: Timestamp string for filename
+        config: Session configuration
+    """
+    # Create session directory
+    session_dir = os.path.join(output_dir, f"session_{timestamp}")
+    os.makedirs(session_dir, exist_ok=True)
+
+    # Save session config
+    config_path = os.path.join(session_dir, "session_config.json")
+    with open(config_path, 'w') as f:
+        json.dump(config.to_dict(), f, indent=2)
+    print(f"Session config saved: {config_path}")
+
+    # Save per-player events
+    all_events = session_manager.get_all_events()
+    for player_id, state in session_manager.players.items():
+        events = state.events
+        instrument = state.instrument
+
+        # Convert events to serializable format
+        event_data = []
+        for event in events:
+            if hasattr(event, '__dict__'):
+                event_dict = {k: v for k, v in event.__dict__.items()
+                             if not k.startswith('_')}
+                event_data.append(event_dict)
+
+        player_data = {
+            "player_id": player_id,
+            "instrument": instrument,
+            "position_index": state.position_index,
+            "total_events": len(event_data),
+            "events": event_data
+        }
+
+        filename = f"player{player_id}_{instrument}.json"
+        filepath = os.path.join(session_dir, filename)
+        with open(filepath, 'w') as f:
+            json.dump(player_data, f, indent=2, default=str)
+        print(f"Player {player_id} ({instrument}): {len(event_data)} events -> {filename}")
 
 
 if __name__ == "__main__":

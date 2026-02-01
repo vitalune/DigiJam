@@ -69,8 +69,8 @@ class StrumDetector:
     """
 
     # Detection parameters
-    STRUM_VELOCITY_THRESHOLD = 0.2  # Minimum downward velocity (m/s) for strum
-    STRUM_DISPLACEMENT_THRESHOLD = 0.15  # Minimum displacement from resting (meters)
+    STRUM_VELOCITY_THRESHOLD = 0.15  # Minimum downward velocity (m/s) for strum
+    STRUM_DISPLACEMENT_THRESHOLD = 0.10  # Minimum displacement from resting (meters)
     DEBOUNCE_TIME = 0.15  # Minimum seconds between strums
     MIN_REVERSAL_VELOCITY = -0.05  # Minimum upward velocity to confirm reversal
 

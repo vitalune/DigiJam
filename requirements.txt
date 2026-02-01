@@ -13,5 +13,9 @@ numpy>=1.24.0
 # Audio processing (for audio_engine.py)
 scipy>=1.10.0
 
+# Multi-person detection (for multi-player sessions)
+# Note: This requires PyTorch as a dependency (~2GB)
+ultralytics>=8.0.0
+
 # Note: The objc warnings about duplicate OpenCV classes are harmless
 # and do not affect functionality.
