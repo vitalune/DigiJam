@@ -3,25 +3,30 @@ import { useNavigate } from 'react-router-dom';
 import { theme } from '../../styles/theme';
 import { DecorativeShapes } from '../common/DecorativeShapes';
 import { Button } from '../common/Button';
-
-type Instrument = 'drums' | 'guitar' | 'piano' | 'vocals';
-type Hand = 'left' | 'right';
-
-interface PlayerConfig {
-  instrument: Instrument | null;
-  hand: Hand;
-}
+import { useSession, type Instrument, type Hand, type PlayerConfig } from '../../context/SessionContext';
 
 const NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const MODES = ['Major', 'Minor'];
 
 export const ConfigPage = () => {
   const navigate = useNavigate();
+  const { setConfig } = useSession();
   const [userCount, setUserCount] = useState<1 | 2 | 3>(1);
   const [players, setPlayers] = useState<PlayerConfig[]>([{ instrument: null, hand: 'right' }]);
   const [bpm, setBpm] = useState(120);
   const [keyNote, setKeyNote] = useState('E');
   const [keyMode, setKeyMode] = useState('Minor');
+
+  const handlePlay = () => {
+    setConfig({
+      playerCount: userCount,
+      players,
+      bpm,
+      keyNote,
+      keyMode,
+    });
+    navigate('/instructions');
+  };
 
   // Update players array when user count changes
   useEffect(() => {
@@ -380,7 +385,7 @@ export const ConfigPage = () => {
         {/* Play Button */}
         <div style={{ marginTop: '3rem', textAlign: 'center' }}>
           <Button
-            onClick={() => navigate('/instructions')}
+            onClick={handlePlay}
             disabled={!isConfigValid()}
             style={{
               opacity: isConfigValid() ? 1 : 0.5,
