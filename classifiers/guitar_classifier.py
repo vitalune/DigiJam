@@ -1,6 +1,6 @@
 """
 Guitar action classifier combining multi-person tracking and strum detection.
-Uses auto-calibration for fret tracking.
+Uses zone-based detection (7 zones) for chord root note selection.
 """
 import cv2
 import json
@@ -9,9 +9,15 @@ from datetime import datetime
 from typing import List, Optional, Callable
 import mediapipe as mp
 import time
+import sys
+from pathlib import Path
+
+# Add parent directory for audio imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from multi_person_tracker import MultiPersonTracker, PersonPose
-from strum_detector import StrumDetector, StrumEvent
+from detectors.strum_detector import StrumDetector, StrumEvent
+from audio.music_theory import KEY_CHORD_NAMES, KEY_ROOT_NOTES, DEFAULT_KEY
 
 
 class GuitarClassifier:
@@ -22,16 +28,17 @@ class GuitarClassifier:
     - Multi-person pose tracking
     - World landmark extraction (meters)
     - Velocity-based strum detection
-    - Fret position tracking via calibration
+    - Zone-based chord root note tracking (7 zones)
 
     Actions:
     - Strum: Dominant hand downward motion with sufficient velocity and displacement
-    - Fret tracking: Non-dominant hand x-position relative to calibrated origin
+    - Zone tracking: Non-dominant hand x-position determines which chord root to play
     """
 
     def __init__(
         self,
         dominant_hand: str = "right",
+        key: str = DEFAULT_KEY,
         model_complexity: int = 1,
         min_detection_confidence: float = 0.5,
         min_tracking_confidence: float = 0.5,
@@ -43,6 +50,7 @@ class GuitarClassifier:
 
         Args:
             dominant_hand: "right" or "left" - the strumming hand
+            key: Musical key (e.g., 'C Major', 'A Minor')
             model_complexity: Pose model complexity (0=lite, 1=full, 2=heavy)
             min_detection_confidence: Minimum confidence for pose detection
             min_tracking_confidence: Minimum confidence for tracking
@@ -50,6 +58,7 @@ class GuitarClassifier:
             on_strum_callback: Optional callback when strum is detected
         """
         self.dominant_hand = dominant_hand
+        self.key = key
 
         self.tracker = MultiPersonTracker(
             model_complexity=model_complexity,
@@ -67,15 +76,29 @@ class GuitarClassifier:
         self.mp_pose = mp.solutions.pose
 
         # Track recent strums for display
-        self.recent_strums: dict = {}  # player_id -> {"fret": int, "intensity": float}
+        self.recent_strums: dict = {}  # player_id -> {"zone": int, "intensity": float}
         self.strum_display_frames = 20  # How long to show strum indicator
         self.strum_frame_counts: dict = {}  # player_id -> frames remaining
 
         # Strum log
         self.strum_log: List[StrumEvent] = []
 
+        # Timing for relative timestamps
+        self.start_time: Optional[float] = None  # Raw timestamp of first strum
+        self.end_time: Optional[float] = None    # Raw timestamp of last strum
+
         # Last processed persons (for drawing without reprocessing)
         self._last_persons: List[PersonPose] = []
+
+    def get_chord_name(self, zone: int) -> str:
+        """Get chord name for current zone and key."""
+        key_names = KEY_CHORD_NAMES.get(self.key, KEY_CHORD_NAMES[DEFAULT_KEY])
+        return key_names.get(zone, key_names[1])
+
+    def get_root_note(self, zone: int) -> str:
+        """Get root note for current zone and key."""
+        key_roots = KEY_ROOT_NOTES.get(self.key, KEY_ROOT_NOTES[DEFAULT_KEY])
+        return key_roots.get(zone, key_roots[1])
 
     def process_frame(self, frame, current_time: float = None) -> List[StrumEvent]:
         """
@@ -140,10 +163,15 @@ class GuitarClassifier:
         """Record a strum and trigger callback."""
         self.strum_log.append(strum)
         self.recent_strums[strum.player_id] = {
-            "fret": strum.fret,
+            "zone": strum.zone,
             "intensity": strum.intensity
         }
         self.strum_frame_counts[strum.player_id] = self.strum_display_frames
+
+        # Track start_time and end_time for relative timestamps
+        if self.start_time is None:
+            self.start_time = strum.raw_timestamp
+        self.end_time = strum.raw_timestamp
 
         if self.on_strum_callback:
             self.on_strum_callback(strum)
@@ -162,7 +190,7 @@ class GuitarClassifier:
 
     def draw_overlay(self, frame, persons: List[PersonPose] = None):
         """
-        Draw skeleton, calibration status, and fret indicator on frame.
+        Draw skeleton, calibration status, and zone indicator on frame.
 
         Args:
             frame: BGR image to draw on (modified in place)
@@ -185,15 +213,28 @@ class GuitarClassifier:
                 2
             )
         else:
-            # Show current fret
+            # Show current zone and chord name
+            zone = self.strum_detector.current_zone
+            chord_name = self.get_chord_name(zone)
+            root_note = self.get_root_note(zone)
             cv2.putText(
                 frame,
-                f"Fret: {self.strum_detector.current_fret}",
+                f"Zone {zone}: {chord_name} (Root: {root_note})",
                 (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.8,
                 (0, 255, 0),
                 2
+            )
+            # Show key
+            cv2.putText(
+                frame,
+                f"Key: {self.key}",
+                (10, 60),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (200, 200, 200),
+                1
             )
 
         for person in persons:
@@ -219,7 +260,9 @@ class GuitarClassifier:
                 # Add recent strum info if available
                 if player_id in self.recent_strums:
                     strum_info = self.recent_strums[player_id]
-                    label += f": STRUM (Fret {strum_info['fret']})"
+                    zone = strum_info['zone']
+                    chord_name = self.get_chord_name(zone)
+                    label += f": STRUM ({chord_name})"
 
                 # Draw label with background
                 (text_w, text_h), baseline = cv2.getTextSize(
@@ -257,11 +300,14 @@ class GuitarClassifier:
         # Draw dexterity and hand assignment indicator
         self._draw_hand_indicator(frame, w, h)
 
+        # Draw zone indicator at bottom
+        self._draw_zone_indicator(frame, w, h)
+
     def _draw_hand_indicator(self, frame, w: int, h: int):
         """Draw hand assignment indicator in corner."""
         strum_hand = self.dominant_hand.capitalize()
         fret_hand = "Left" if self.dominant_hand == "right" else "Right"
-        text = f"Strum: {strum_hand} | Fret: {fret_hand}"
+        text = f"Strum: {strum_hand} | Zone: {fret_hand}"
         cv2.putText(
             frame,
             text,
@@ -272,26 +318,81 @@ class GuitarClassifier:
             1
         )
 
+    def _draw_zone_indicator(self, frame, w: int, h: int):
+        """Draw visual zone indicator at bottom of screen."""
+        if not self.strum_detector.is_calibrated:
+            return
+
+        # Draw 7 zones as colored boxes
+        zone_width = w // 7
+        y_start = h - 40
+        y_end = h - 10
+
+        for i in range(7):
+            x_start = i * zone_width
+            x_end = (i + 1) * zone_width
+
+            # Highlight current zone
+            is_current = (i + 1) == self.strum_detector.current_zone
+
+            if is_current:
+                color = (0, 255, 0)    # Green for current zone
+            else:
+                color = (50, 50, 50)   # Dark gray
+
+            cv2.rectangle(frame, (x_start, y_start), (x_end, y_end), color, -1)
+            cv2.rectangle(frame, (x_start, y_start), (x_end, y_end), (200, 200, 200), 1)
+
+            # Zone number and chord name
+            chord_name = self.get_chord_name(i + 1)
+            cv2.putText(
+                frame,
+                f"{i + 1}",
+                (x_start + zone_width // 2 - 5, y_start + 15),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.4,
+                (255, 255, 255),
+                1
+            )
+            cv2.putText(
+                frame,
+                chord_name,
+                (x_start + zone_width // 2 - 15, y_start + 28),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.35,
+                (180, 180, 180),
+                1
+            )
+
     def reset_calibration(self):
         """Reset calibration (user pressed 'g')."""
         self.strum_detector.reset_calibration()
 
     def save_strum_log(self, output_path: str):
-        """Save all detected strums to JSON file."""
+        """Save all detected strums to JSON file with relative timestamps."""
+        # Calculate end_time relative to start_time
+        relative_end_time = None
+        if self.start_time is not None and self.end_time is not None:
+            relative_end_time = round(self.end_time - self.start_time, 4)
+
         data = {
             "session_timestamp": datetime.now().isoformat(),
             "instrument": "guitar",
             "dominant_hand": self.dominant_hand,
+            "key": self.key,
             "total_strums": len(self.strum_log),
-            "strums": [strum.to_dict() for strum in self.strum_log]
+            "end_time": relative_end_time,
+            "strums": [strum.to_dict(start_time=self.start_time) for strum in self.strum_log]
         }
         with open(output_path, 'w') as f:
             json.dump(data, f, indent=2)
         print(f"Saved {len(self.strum_log)} strums to {output_path}")
 
     def clear_strum_log(self):
-        """Clear the strum log."""
+        """Clear the strum log and reset timing."""
         self.strum_log.clear()
+        self.start_time = None
+        self.end_time = None
         print("Strum log cleared")
 
     def close(self):

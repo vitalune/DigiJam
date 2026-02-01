@@ -1,6 +1,7 @@
 """
 Piano action classifier combining multi-person tracking and zone-based detection.
 Uses manual calibration (3-second countdown) for piano length and upward velocity for hit detection.
+Supports all 24 major/minor keys.
 """
 import cv2
 import json
@@ -8,9 +9,15 @@ from datetime import datetime
 from typing import List, Optional, Callable
 import mediapipe as mp
 import time
+import sys
+from pathlib import Path
+
+# Add parent directory for audio imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from multi_person_tracker import MultiPersonTracker, PersonPose
-from piano_detector import PianoDetector, PianoEvent
+from detectors.piano_detector import PianoDetector, PianoEvent
+from audio.music_theory import KEY_CHORD_NAMES, DEFAULT_KEY
 
 
 class PianoClassifier:
@@ -22,17 +29,16 @@ class PianoClassifier:
     - World landmark extraction (meters)
     - Zone-based chord and octave tracking
     - Upward velocity-based hit detection
+    - Key-based chord selection (all 24 major/minor keys)
 
     Actions:
-    - Chord (right hand): Zone 1-7 determines chord number
+    - Chord (right hand): Zone 1-7 determines chord number in the selected key
     - Bass (left hand): Plays root note octave based on zone
     """
 
-    # Chord names for display (key of C major)
-    CHORD_NAMES = ["", "C", "Dm", "Em", "F", "G", "Am", "Bdim"]
-
     def __init__(
         self,
+        key: str = DEFAULT_KEY,
         model_complexity: int = 1,
         min_detection_confidence: float = 0.5,
         min_tracking_confidence: float = 0.5,
@@ -43,12 +49,15 @@ class PianoClassifier:
         Initialize piano classifier.
 
         Args:
+            key: Musical key (e.g., 'C Major', 'A Minor')
             model_complexity: Pose model complexity (0=lite, 1=full, 2=heavy)
             min_detection_confidence: Minimum confidence for pose detection
             min_tracking_confidence: Minimum confidence for tracking
             max_persons: Maximum number of people to track
             on_hit_callback: Optional callback when piano hit is detected
         """
+        self.key = key
+
         self.tracker = MultiPersonTracker(
             model_complexity=model_complexity,
             min_detection_confidence=min_detection_confidence,
@@ -77,8 +86,17 @@ class PianoClassifier:
         # Hit log
         self.hit_log: List[PianoEvent] = []
 
+        # Timing for relative timestamps
+        self.start_time: Optional[float] = None  # Raw timestamp of first hit
+        self.end_time: Optional[float] = None    # Raw timestamp of last hit
+
         # Last processed persons (for drawing without reprocessing)
         self._last_persons: List[PersonPose] = []
+
+    def get_chord_name(self, zone: int) -> str:
+        """Get chord name for current zone and key."""
+        key_names = KEY_CHORD_NAMES.get(self.key, KEY_CHORD_NAMES[DEFAULT_KEY])
+        return key_names.get(zone, key_names.get(1, "?"))
 
     @property
     def is_calibrated(self) -> bool:
@@ -165,6 +183,11 @@ class PianoClassifier:
         }
         self.hit_frame_counts[hit.player_id] = self.hit_display_frames
 
+        # Track start_time and end_time for relative timestamps
+        if self.start_time is None:
+            self.start_time = hit.raw_timestamp
+        self.end_time = hit.raw_timestamp
+
         if self.on_hit_callback:
             self.on_hit_callback(hit)
 
@@ -205,8 +228,8 @@ class PianoClassifier:
                 2
             )
         else:
-            # Show current chord and octave
-            chord_name = self.CHORD_NAMES[self.current_chord]
+            # Show current chord and key
+            chord_name = self.get_chord_name(self.current_chord)
             cv2.putText(
                 frame,
                 f"Chord: {chord_name} (Zone {self.current_chord})",
@@ -215,6 +238,17 @@ class PianoClassifier:
                 0.7,
                 (0, 255, 0),
                 2
+            )
+
+            # Show key
+            cv2.putText(
+                frame,
+                f"Key: {self.key}",
+                (10, 55),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (200, 200, 200),
+                1
             )
 
             # Show left hand zone/octave status
@@ -231,7 +265,7 @@ class PianoClassifier:
             cv2.putText(
                 frame,
                 bass_text,
-                (10, 60),
+                (10, 80),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
                 bass_color,
@@ -262,7 +296,7 @@ class PianoClassifier:
                 if player_id in self.recent_hits:
                     hit_info = self.recent_hits[player_id]
                     if hit_info["action"] == "chord":
-                        chord_name = self.CHORD_NAMES[hit_info["chord"]]
+                        chord_name = self.get_chord_name(hit_info["chord"])
                         label += f": {chord_name} CHORD"
                     else:
                         label += f": BASS (Oct {hit_info['octave']})"
@@ -334,7 +368,7 @@ class PianoClassifier:
             cv2.rectangle(frame, (x_start, y_start), (x_end, y_end), (200, 200, 200), 1)
 
             # Zone number and chord name
-            chord_name = self.CHORD_NAMES[i + 1]
+            chord_name = self.get_chord_name(i + 1)
             cv2.putText(
                 frame,
                 f"{i + 1}",
@@ -347,7 +381,7 @@ class PianoClassifier:
             cv2.putText(
                 frame,
                 chord_name,
-                (x_start + zone_width // 2 - 10, y_start + 28),
+                (x_start + zone_width // 2 - 15, y_start + 28),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.35,
                 (180, 180, 180),
@@ -386,20 +420,29 @@ class PianoClassifier:
         return False
 
     def save_hit_log(self, output_path: str):
-        """Save all detected hits to JSON file."""
+        """Save all detected hits to JSON file with relative timestamps."""
+        # Calculate end_time relative to start_time
+        relative_end_time = None
+        if self.start_time is not None and self.end_time is not None:
+            relative_end_time = round(self.end_time - self.start_time, 4)
+
         data = {
             "session_timestamp": datetime.now().isoformat(),
             "instrument": "piano",
+            "key": self.key,
             "total_hits": len(self.hit_log),
-            "hits": [hit.to_dict() for hit in self.hit_log]
+            "end_time": relative_end_time,
+            "hits": [hit.to_dict(start_time=self.start_time) for hit in self.hit_log]
         }
         with open(output_path, 'w') as f:
             json.dump(data, f, indent=2)
         print(f"Saved {len(self.hit_log)} piano hits to {output_path}")
 
     def clear_hit_log(self):
-        """Clear the hit log."""
+        """Clear the hit log and reset timing."""
         self.hit_log.clear()
+        self.start_time = None
+        self.end_time = None
         print("Piano hit log cleared")
 
     def close(self):

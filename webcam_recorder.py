@@ -1,6 +1,7 @@
 """
 Webcam recording with real-time instrument action classification.
-Supports drums and guitar with recording sessions.
+Supports drums, guitar, and piano with recording sessions.
+Supports all 24 major/minor keys for guitar and piano.
 """
 import cv2
 import os
@@ -9,12 +10,13 @@ import time
 from datetime import datetime
 from typing import Optional, List, Union
 
-from drum_classifier import DrumClassifier
-from guitar_classifier import GuitarClassifier
-from piano_classifier import PianoClassifier
-from hit_detector import HitEvent
-from strum_detector import StrumEvent
-from piano_detector import PianoEvent
+from classifiers.drum_classifier import DrumClassifier
+from classifiers.guitar_classifier import GuitarClassifier
+from classifiers.piano_classifier import PianoClassifier
+from detectors.hit_detector import HitEvent
+from detectors.strum_detector import StrumEvent
+from detectors.piano_detector import PianoEvent
+from audio.music_theory import AVAILABLE_KEYS, DEFAULT_KEY
 
 
 class WebcamRecorder:
@@ -22,8 +24,9 @@ class WebcamRecorder:
     Real-time webcam recording with instrument classification.
 
     Features:
-    - Instrument selection (drums, guitar)
+    - Instrument selection (drums, guitar, piano)
     - Dexterity selection (dominant hand)
+    - Key selection (all 24 major/minor keys)
     - Live pose skeleton display
     - Real-time action classification
     - Recording with stop key ('r' or 's')
@@ -38,7 +41,8 @@ class WebcamRecorder:
         self,
         output_dir: str = "output",
         instrument: str = "drums",
-        dominant_hand: str = "right"
+        dominant_hand: str = "right",
+        key: str = DEFAULT_KEY
     ):
         """
         Initialize webcam recorder.
@@ -47,10 +51,12 @@ class WebcamRecorder:
             output_dir: Directory to save outputs
             instrument: Instrument being played
             dominant_hand: "right" or "left" - player's dominant hand
+            key: Musical key (e.g., 'C Major', 'A Minor')
         """
         self.output_dir = output_dir
         self.instrument = instrument
         self.dominant_hand = dominant_hand
+        self.key = key
         os.makedirs(output_dir, exist_ok=True)
 
         # Classifier will be initialized when run() is called
@@ -73,6 +79,33 @@ class WebcamRecorder:
         self.CALIBRATION_COUNTDOWN_SECONDS = 3.0
         self._start_recording_after_calibration = True
         self.fps: float = 30.0  # Will be updated when webcam opens
+
+    def _get_next_session_paths(self) -> tuple:
+        """
+        Get the next available session file paths for video and JSON.
+
+        Naming scheme: [instrument]_session.ext, [instrument]_session1.ext, ...
+        Ensures both video and JSON files use the same session number.
+
+        Returns:
+            Tuple of (video_path, json_path)
+        """
+        base_name = f"{self.instrument}_session"
+
+        # Try without number first
+        video_path = os.path.join(self.output_dir, f"{base_name}.mp4")
+        json_path = os.path.join(self.output_dir, f"{base_name}.json")
+        if not os.path.exists(video_path) and not os.path.exists(json_path):
+            return video_path, json_path
+
+        # Increment until we find an available pair
+        counter = 1
+        while True:
+            video_path = os.path.join(self.output_dir, f"{base_name}{counter}.mp4")
+            json_path = os.path.join(self.output_dir, f"{base_name}{counter}.json")
+            if not os.path.exists(video_path) and not os.path.exists(json_path):
+                return video_path, json_path
+            counter += 1
 
     def _on_hit(self, hit: HitEvent):
         """Callback when drum hit is detected during recording."""
@@ -192,16 +225,7 @@ class WebcamRecorder:
 
     def _start_recording(self, frame, fps: float):
         """Start a new recording session."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        self.video_path = os.path.join(
-            self.output_dir,
-            f"{self.instrument}_session_{timestamp}.mp4"
-        )
-        self.json_path = os.path.join(
-            self.output_dir,
-            f"{self.instrument}_session_{timestamp}.json"
-        )
+        self.video_path, self.json_path = self._get_next_session_paths()
 
         h, w = frame.shape[:2]
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -228,6 +252,8 @@ class WebcamRecorder:
         print(f"\n{'='*50}")
         print(f"RECORDING STARTED")
         print(f"Instrument: {self.instrument}")
+        if self.instrument in ["guitar", "piano"]:
+            print(f"Key: {self.key}")
         print(f"Press 'r' or 's' to stop recording")
         print(f"{'='*50}\n")
 
@@ -327,6 +353,38 @@ class WebcamRecorder:
             except ValueError:
                 print("Please enter a valid number")
 
+    @staticmethod
+    def prompt_key() -> str:
+        """
+        Prompt user to select a musical key.
+
+        Returns:
+            Selected key name (e.g., 'C Major', 'A Minor')
+        """
+        print("\n" + "=" * 50)
+        print("KEY SELECTION")
+        print("=" * 50)
+        print("\nAvailable keys:")
+
+        # Display in columns for readability
+        for i, key in enumerate(AVAILABLE_KEYS, 1):
+            suffix = " (default)" if key == DEFAULT_KEY else ""
+            print(f"  {i:2}. {key}{suffix}")
+
+        print("-" * 50)
+
+        while True:
+            try:
+                choice = input(f"\nWhich key? [1-{len(AVAILABLE_KEYS)}]: ").strip()
+                if choice == "":
+                    return DEFAULT_KEY  # Default to C Major
+                idx = int(choice) - 1
+                if 0 <= idx < len(AVAILABLE_KEYS):
+                    return AVAILABLE_KEYS[idx]
+                print(f"Please enter a number between 1 and {len(AVAILABLE_KEYS)}")
+            except ValueError:
+                print("Please enter a valid number")
+
     def run(self, skip_prompt: bool = False):
         """
         Run the webcam recorder.
@@ -339,6 +397,7 @@ class WebcamRecorder:
         - 'r' or 's': Start/Stop recording
         - 'c': Clear action log
         - 'g': Recalibrate guitar (guitar mode only)
+        - 'p': Recalibrate piano (piano mode only)
         """
         # Initialize appropriate classifier based on instrument
         if self.instrument == "drums":
@@ -350,11 +409,13 @@ class WebcamRecorder:
         elif self.instrument == "guitar":
             self.classifier = GuitarClassifier(
                 dominant_hand=self.dominant_hand,
+                key=self.key,
                 model_complexity=1,
                 on_strum_callback=self._on_strum
             )
         elif self.instrument == "piano":
             self.classifier = PianoClassifier(
+                key=self.key,
                 model_complexity=1,
                 on_hit_callback=self._on_piano_hit
             )
@@ -371,6 +432,8 @@ class WebcamRecorder:
         print("=" * 50)
         print(f"\nInstrument: {self.instrument.upper()}")
         print(f"Dominant hand: {self.dominant_hand.upper()}")
+        if self.instrument in ["guitar", "piano"]:
+            print(f"Key: {self.key}")
 
         if self.instrument == "drums":
             print("\nDrum Actions (body-relative):")
@@ -386,14 +449,14 @@ class WebcamRecorder:
         elif self.instrument == "guitar":
             print("\nGuitar Actions:")
             print(f"  Strum:   {strum_hand.capitalize()} hand downward motion")
-            print(f"  Fret:    {fret_hand.capitalize()} hand position (5cm per fret)")
+            print(f"  Zone:    {fret_hand.capitalize()} hand position (7 zones = 7 chord roots)")
             print("\nAuto-calibrates on first frame with both hands visible.")
             print("Strum intensity is tracked for volume control.")
             print("\nControls:")
             print("  'r' or 's' - Start/Stop recording")
             print("  'q' - Quit")
             print("  'c' - Clear strum log")
-            print("  'g' - Recalibrate fret position")
+            print("  'g' - Recalibrate zone position")
         elif self.instrument == "piano":
             print("\nPiano Actions:")
             print("  Right Hand: Determines chord (7 zones = 7 chords)")
@@ -564,7 +627,7 @@ class WebcamRecorder:
 
 
 def main():
-    """Main entry point with instrument and dexterity selection."""
+    """Main entry point with instrument, dexterity, and key selection."""
     # Prompt for instrument
     instrument = WebcamRecorder.prompt_instrument()
     print(f"\nSelected: {instrument.upper()}")
@@ -573,10 +636,18 @@ def main():
     dominant_hand = WebcamRecorder.prompt_dexterity()
     print(f"\nDominant hand: {dominant_hand.upper()}")
 
+    # Prompt for key (only for guitar and piano)
+    if instrument in ["guitar", "piano"]:
+        key = WebcamRecorder.prompt_key()
+        print(f"\nKey: {key}")
+    else:
+        key = DEFAULT_KEY
+
     recorder = WebcamRecorder(
         output_dir="output",
         instrument=instrument,
-        dominant_hand=dominant_hand
+        dominant_hand=dominant_hand,
+        key=key
     )
     recorder.run()
 

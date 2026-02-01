@@ -1,6 +1,6 @@
 """
 Strum detection for guitar using velocity analysis of wrist world landmarks.
-Includes auto-calibration for fret position tracking.
+Uses zone-based detection (7 zones) for chord root note selection.
 """
 from dataclasses import dataclass, field
 from collections import deque
@@ -16,17 +16,27 @@ class StrumEvent:
     player_id: int
     instrument: str = "guitar"
     action: str = "strum"
-    fret: int = 0  # Current fret at strum time
+    zone: int = 1  # Current zone (1-7) at strum time - determines root note
     intensity: float = 0.0  # Strum velocity for volume control
+    raw_timestamp: float = 0.0  # Raw time.time() value for relative timestamp calculation
 
-    def to_dict(self) -> dict:
-        """Convert to dictionary for JSON serialization."""
+    def to_dict(self, start_time: float = None) -> dict:
+        """Convert to dictionary for JSON serialization.
+
+        Args:
+            start_time: If provided, timestamp will be relative to this value (in seconds)
+        """
+        if start_time is not None and self.raw_timestamp > 0:
+            timestamp_value = round(self.raw_timestamp - start_time, 4)
+        else:
+            timestamp_value = self.timestamp
+
         return {
-            "timestamp": self.timestamp,
+            "timestamp": timestamp_value,
             "player_id": self.player_id,
             "instrument": self.instrument,
             "action": self.action,
-            "fret": self.fret,
+            "zone": self.zone,
             "intensity": round(self.intensity, 4)
         }
 
@@ -43,18 +53,19 @@ class HandHistory:
 
 class StrumDetector:
     """
-    Detects guitar strums based on velocity analysis and tracks fret position.
+    Detects guitar strums based on velocity analysis and tracks zone position.
 
     Algorithm:
-    1. Auto-calibrate fret origin and strum resting position on first frame
+    1. Auto-calibrate zone boundaries on first frame (like piano)
     2. Track strum hand y-position over time (world coordinates in meters)
     3. Calculate velocity = delta_y / delta_time
     4. Detect strum when: downward velocity > threshold AND displacement > threshold
-    5. Calculate fret from fret hand x-position relative to calibrated origin
+    5. Calculate zone (1-7) from fret hand x-position relative to calibrated boundaries
 
-    Fret Calculation:
-    - Every 5cm (0.05m) of movement from origin = +1 fret
-    - current_fret = round(abs(fret_hand_x - fret_origin) / 0.05)
+    Zone Calculation:
+    - The fret hand x-range is divided into 7 equal zones
+    - Zone 1 is at the leftmost position, Zone 7 at rightmost
+    - Each zone corresponds to a chord root note in the selected key
     """
 
     # Detection parameters
@@ -63,9 +74,8 @@ class StrumDetector:
     DEBOUNCE_TIME = 0.15  # Minimum seconds between strums
     MIN_REVERSAL_VELOCITY = -0.05  # Minimum upward velocity to confirm reversal
 
-    # Fret parameters
-    FRET_SIZE = 0.05  # 5cm per fret
-    MAX_FRETS = 24  # Maximum fret number
+    # Zone parameters
+    NUM_ZONES = 7  # Number of zones (matching 7 diatonic chords)
 
     def __init__(self, dominant_hand: str = "right"):
         """
@@ -78,9 +88,10 @@ class StrumDetector:
         self.strum_hand = dominant_hand
         self.fret_hand = "left" if dominant_hand == "right" else "right"
 
-        # Calibration state
+        # Calibration state (zone boundaries)
         self.is_calibrated = False
-        self.fret_origin: Optional[float] = None  # Fret hand x at "Fret 0"
+        self.left_boundary: Optional[float] = None   # Leftmost x position (zone 1)
+        self.right_boundary: Optional[float] = None  # Rightmost x position (zone 7)
         self.strum_resting_y: Optional[float] = None  # Strum hand resting y position
 
         # Track history per player
@@ -88,7 +99,7 @@ class StrumDetector:
         self.hand_histories: Dict[Tuple[int, str], HandHistory] = {}
 
         # Current state
-        self.current_fret: int = 0
+        self.current_zone: int = 1
 
     def _get_history(self, player_id: int, hand: str) -> HandHistory:
         """Get or create hand history for player/hand combination."""
@@ -113,45 +124,62 @@ class StrumDetector:
 
         return (y_current - y_previous) / dt
 
-    def calibrate(self, fret_hand_x: float, strum_hand_y: float):
+    def calibrate(self, left_x: float, right_x: float, strum_hand_y: float = None):
         """
-        Set fret origin and strum resting position.
+        Set zone boundaries for guitar neck.
 
         Args:
-            fret_hand_x: X-coordinate of fret hand (becomes Fret 0)
+            left_x: X-coordinate of leftmost position (zone 1)
+            right_x: X-coordinate of rightmost position (zone 7)
             strum_hand_y: Y-coordinate of strum hand (becomes resting position)
         """
-        self.fret_origin = fret_hand_x
-        self.strum_resting_y = strum_hand_y
+        # Ensure left is actually less than right
+        if left_x > right_x:
+            left_x, right_x = right_x, left_x
+
+        self.left_boundary = left_x
+        self.right_boundary = right_x
+        if strum_hand_y is not None:
+            self.strum_resting_y = strum_hand_y
         self.is_calibrated = True
-        print(f"Guitar calibrated: fret_origin={fret_hand_x:.3f}m, strum_resting={strum_hand_y:.3f}m")
+        print(f"Guitar calibrated: left={left_x:.3f}m, right={right_x:.3f}m")
 
     def reset_calibration(self):
         """Clear calibration to recalibrate on next frame."""
         self.is_calibrated = False
-        self.fret_origin = None
+        self.left_boundary = None
+        self.right_boundary = None
         self.strum_resting_y = None
-        self.current_fret = 0
+        self.current_zone = 1
         # Clear histories to start fresh
         self.hand_histories.clear()
         print("Guitar calibration reset - show both hands to recalibrate")
 
-    def get_current_fret(self, fret_hand_x: float) -> int:
+    def get_current_zone(self, fret_hand_x: float) -> int:
         """
-        Calculate fret number from hand position.
+        Calculate zone number (1-7) from hand position.
 
         Args:
             fret_hand_x: Current x-coordinate of fret hand
 
         Returns:
-            Fret number (0 to MAX_FRETS)
+            Zone number (1 to 7)
         """
-        if not self.is_calibrated or self.fret_origin is None:
-            return 0
+        if not self.is_calibrated or self.left_boundary is None or self.right_boundary is None:
+            return 1
 
-        delta_x = abs(fret_hand_x - self.fret_origin)
-        fret = round(delta_x / self.FRET_SIZE)
-        return min(fret, self.MAX_FRETS)
+        total_width = self.right_boundary - self.left_boundary
+        if total_width <= 0:
+            return 1
+
+        # Calculate position as percentage across the range
+        position = fret_hand_x - self.left_boundary
+        percentage = position / total_width
+
+        # Map to zone 1-7
+        zone = int(percentage * self.NUM_ZONES) + 1
+        # Clamp to valid range
+        return max(1, min(self.NUM_ZONES, zone))
 
     def update(
         self,
@@ -183,11 +211,13 @@ class StrumDetector:
 
         # Auto-calibrate if needed
         if not self.is_calibrated:
-            self.calibrate(fret_hand_x, strum_hand_y)
+            # Use both hand positions to establish boundaries
+            # The fret hand typically moves along the x-axis
+            self.calibrate(fret_hand_x - 0.15, fret_hand_x + 0.15, strum_hand_y)
             return None
 
-        # Update current fret
-        self.current_fret = self.get_current_fret(fret_hand_x)
+        # Update current zone
+        self.current_zone = self.get_current_zone(fret_hand_x)
 
         # Get history for strum hand
         history = self._get_history(player_id, self.strum_hand)
@@ -206,7 +236,7 @@ class StrumDetector:
             return None
 
         # Calculate displacement from resting position
-        displacement = strum_hand_y - self.strum_resting_y
+        displacement = strum_hand_y - self.strum_resting_y if self.strum_resting_y else 0
 
         # Track if we're moving downward fast enough
         if prev_velocity > self.STRUM_VELOCITY_THRESHOLD:
@@ -238,8 +268,9 @@ class StrumDetector:
             return StrumEvent(
                 timestamp=datetime.now().isoformat(),
                 player_id=player_id,
-                fret=self.current_fret,
-                intensity=strum_intensity
+                zone=self.current_zone,
+                intensity=strum_intensity,
+                raw_timestamp=current_time
             )
 
         return None

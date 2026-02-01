@@ -11,7 +11,7 @@ import mediapipe as mp
 import time
 
 from multi_person_tracker import MultiPersonTracker, PersonPose
-from hit_detector import HitDetector, HitEvent
+from detectors.hit_detector import HitDetector, HitEvent
 
 
 class DrumClassifier:
@@ -78,6 +78,10 @@ class DrumClassifier:
 
         # Hit log
         self.hit_log: List[HitEvent] = []
+
+        # Timing for relative timestamps
+        self.start_time: Optional[float] = None  # Raw timestamp of first hit
+        self.end_time: Optional[float] = None    # Raw timestamp of last hit
 
         # Last processed persons (for drawing without reprocessing)
         self._last_persons: List[PersonPose] = []
@@ -209,6 +213,11 @@ class DrumClassifier:
             "hand": hit.hand
         }
         self.action_frame_counts[hit.player_id] = self.action_display_frames
+
+        # Track start_time and end_time for relative timestamps
+        if self.start_time is None:
+            self.start_time = hit.raw_timestamp
+        self.end_time = hit.raw_timestamp
 
         if self.on_hit_callback:
             self.on_hit_callback(hit)
@@ -358,21 +367,29 @@ class DrumClassifier:
         )
 
     def save_hit_log(self, output_path: str):
-        """Save all detected hits to JSON file."""
+        """Save all detected hits to JSON file with relative timestamps."""
+        # Calculate end_time relative to start_time
+        relative_end_time = None
+        if self.start_time is not None and self.end_time is not None:
+            relative_end_time = round(self.end_time - self.start_time, 4)
+
         data = {
             "session_timestamp": datetime.now().isoformat(),
             "instrument": "drums",
             "dominant_hand": self.dominant_hand,
             "total_hits": len(self.hit_log),
-            "hits": [hit.to_dict() for hit in self.hit_log]
+            "end_time": relative_end_time,
+            "hits": [hit.to_dict(start_time=self.start_time) for hit in self.hit_log]
         }
         with open(output_path, 'w') as f:
             json.dump(data, f, indent=2)
         print(f"Saved {len(self.hit_log)} hits to {output_path}")
 
     def clear_hit_log(self):
-        """Clear the hit log."""
+        """Clear the hit log and reset timing."""
         self.hit_log.clear()
+        self.start_time = None
+        self.end_time = None
         print("Hit log cleared")
 
     def close(self):

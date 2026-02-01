@@ -10,5 +10,8 @@ opencv-python>=4.8.0
 # Numerical computing
 numpy>=1.24.0
 
+# Audio processing (for audio_engine.py)
+scipy>=1.10.0
+
 # Note: The objc warnings about duplicate OpenCV classes are harmless
 # and do not affect functionality.

@@ -19,11 +19,21 @@ class HitEvent:
     action: str  # "hi-hat", "snare", "crash", "kick"
     world_coords_meters: Dict[str, float]  # {"x": float, "y": float, "z": float}
     velocity: float  # Hit velocity in m/s (for volume control)
+    raw_timestamp: float = 0.0  # Raw time.time() value for relative timestamp calculation
 
-    def to_dict(self) -> dict:
-        """Convert to dictionary for JSON serialization."""
+    def to_dict(self, start_time: float = None) -> dict:
+        """Convert to dictionary for JSON serialization.
+
+        Args:
+            start_time: If provided, timestamp will be relative to this value (in seconds)
+        """
+        if start_time is not None and self.raw_timestamp > 0:
+            timestamp_value = round(self.raw_timestamp - start_time, 4)
+        else:
+            timestamp_value = self.timestamp
+
         return {
-            "timestamp": self.timestamp,
+            "timestamp": timestamp_value,
             "player_id": self.player_id,
             "hand": self.hand,
             "instrument": self.instrument,
@@ -63,15 +73,15 @@ class HitDetector:
     - Kick: Foot downward motion after lift
     """
 
-    # Detection parameters - lowered for more natural detection
-    VELOCITY_THRESHOLD = 0.25      # Minimum downward velocity (m/s) before hit (was 0.5)
-    DEBOUNCE_TIME = 0.12           # Minimum seconds between hits (was 0.15)
-    MIN_REVERSAL_VELOCITY = -0.05  # Minimum upward velocity to confirm reversal (was -0.1)
-    SNARE_CENTER_THRESHOLD = 0.35  # Max x-distance from center for snare (meters)
+    # Detection parameters - tuned for easier triggering
+    VELOCITY_THRESHOLD = 0.15      # Minimum downward velocity (m/s) before hit
+    DEBOUNCE_TIME = 0.10           # Minimum seconds between hits
+    MIN_REVERSAL_VELOCITY = -0.03  # Minimum upward velocity to confirm reversal
+    SNARE_CENTER_THRESHOLD = 0.40  # Max x-distance from center for snare (meters)
 
-    # Kick detection parameters - lowered for more natural detection
-    KICK_VELOCITY_THRESHOLD = 0.15  # Lower threshold for foot motion (was 0.3)
-    KICK_DEBOUNCE_TIME = 0.18       # Debounce for kicks (was 0.2)
+    # Kick detection parameters - tuned for easier triggering
+    KICK_VELOCITY_THRESHOLD = 0.10  # Lower threshold for foot motion
+    KICK_DEBOUNCE_TIME = 0.15       # Debounce for kicks
 
     def __init__(self, dominant_hand: str = "right"):
         """
@@ -253,7 +263,8 @@ class HitDetector:
                     "y": round(world_y, 4),
                     "z": round(world_z, 4)
                 },
-                velocity=hit_velocity
+                velocity=hit_velocity,
+                raw_timestamp=current_time
             )
 
         return None
@@ -339,7 +350,8 @@ class HitDetector:
                     "y": round(world_y, 4),
                     "z": round(world_z, 4)
                 },
-                velocity=hit_velocity
+                velocity=hit_velocity,
+                raw_timestamp=current_time
             )
 
         return None

@@ -20,11 +20,21 @@ class PianoEvent:
     chord: int = 1           # Chord number 1-7 (right hand zone)
     octave: int = 1          # Octave for bass (left hand zone determines this)
     intensity: float = 0.0   # Hit velocity for volume
+    raw_timestamp: float = 0.0  # Raw time.time() value for relative timestamp calculation
 
-    def to_dict(self) -> dict:
-        """Convert to dictionary for JSON serialization."""
+    def to_dict(self, start_time: float = None) -> dict:
+        """Convert to dictionary for JSON serialization.
+
+        Args:
+            start_time: If provided, timestamp will be relative to this value (in seconds)
+        """
+        if start_time is not None and self.raw_timestamp > 0:
+            timestamp_value = round(self.raw_timestamp - start_time, 4)
+        else:
+            timestamp_value = self.timestamp
+
         return {
-            "timestamp": self.timestamp,
+            "timestamp": timestamp_value,
             "player_id": self.player_id,
             "instrument": self.instrument,
             "hand": self.hand,
@@ -288,7 +298,8 @@ class PianoDetector:
                 action="chord",
                 chord=self.current_right_zone,
                 octave=0,  # Not applicable for chord
-                intensity=right_hit
+                intensity=right_hit,
+                raw_timestamp=current_time
             ))
 
         # Check for left hand (bass) hit
@@ -309,7 +320,8 @@ class PianoDetector:
                     action="bass",
                     chord=self.current_right_zone,  # Root note of current chord
                     octave=self.get_octave_from_zone(self.current_left_zone),
-                    intensity=left_hit
+                    intensity=left_hit,
+                    raw_timestamp=current_time
                 ))
 
         return events
