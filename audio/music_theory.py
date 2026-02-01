@@ -10,12 +10,14 @@ from typing import List, Tuple, Dict
 # Note names in chromatic order
 NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
-# Semitone offsets from C (handles enharmonic equivalents)
+# Semitone offsets from C (handles enharmonic equivalents including double flats)
 NOTE_TO_SEMITONE = {
     'C': 0, 'C#': 1, 'Db': 1, 'D': 2, 'D#': 3, 'Eb': 3,
     'E': 4, 'Fb': 4, 'E#': 5, 'F': 5, 'F#': 6, 'Gb': 6,
     'G': 7, 'G#': 8, 'Ab': 8, 'A': 9, 'A#': 10, 'Bb': 10,
-    'B': 11, 'Cb': 11, 'B#': 0
+    'B': 11, 'Cb': 11, 'B#': 0,
+    # Double flats
+    'Bbb': 9, 'Ebb': 2, 'Abb': 6, 'Dbb': 0, 'Gbb': 5, 'Cbb': 10, 'Fbb': 3
 }
 
 # Semitone distances for pitch selection algorithm
@@ -48,6 +50,68 @@ AVAILABLE_KEYS = [
     'Bb Major', 'Bb Minor',
     'B Major', 'B Minor',
 ]
+
+# Scale notes for each key (7 notes per scale, zones 1-7 map left to right)
+# This is the authoritative source for zone-to-note mapping
+KEY_SCALES: Dict[str, List[str]] = {
+    'A Major': ['A', 'B', 'C#', 'D', 'E', 'F#', 'G#'],
+    'A Minor': ['A', 'B', 'C', 'D', 'E', 'F', 'G'],
+    'Bb Major': ['Bb', 'C', 'D', 'Eb', 'F', 'G', 'A'],
+    'Bb Minor': ['Bb', 'C', 'Db', 'Eb', 'F', 'Gb', 'Ab'],
+    'B Major': ['B', 'C#', 'D#', 'E', 'F#', 'G#', 'A#'],
+    'B Minor': ['B', 'C#', 'D', 'E', 'F#', 'G', 'A'],
+    'C Major': ['C', 'D', 'E', 'F', 'G', 'A', 'B'],
+    'C Minor': ['C', 'D', 'Eb', 'F', 'G', 'Ab', 'Bb'],
+    'Db Major': ['Db', 'Eb', 'F', 'Gb', 'Ab', 'Bb', 'C'],
+    'Db Minor': ['Db', 'Eb', 'Fb', 'Gb', 'Ab', 'Bbb', 'Cb'],
+    'D Major': ['D', 'E', 'F#', 'G', 'A', 'B', 'C#'],
+    'D Minor': ['D', 'E', 'F', 'G', 'A', 'Bb', 'C'],
+    'Eb Major': ['Eb', 'F', 'G', 'Ab', 'Bb', 'C', 'D'],
+    'Eb Minor': ['Eb', 'F', 'Gb', 'Ab', 'Bb', 'Cb', 'Db'],
+    'E Major': ['E', 'F#', 'G#', 'A', 'B', 'C#', 'D#'],
+    'E Minor': ['E', 'F#', 'G', 'A', 'B', 'C', 'D'],
+    'F Major': ['F', 'G', 'A', 'Bb', 'C', 'D', 'E'],
+    'F Minor': ['F', 'G', 'Ab', 'Bb', 'C', 'Db', 'Eb'],
+    'Gb Major': ['Gb', 'Ab', 'Bb', 'Cb', 'Db', 'Eb', 'F'],
+    'Gb Minor': ['Gb', 'Ab', 'Bbb', 'Cb', 'Db', 'Ebb', 'Fb'],
+    'G Major': ['G', 'A', 'B', 'C', 'D', 'E', 'F#'],
+    'G Minor': ['G', 'A', 'Bb', 'C', 'D', 'Eb', 'F'],
+    'Ab Major': ['Ab', 'Bb', 'C', 'Db', 'Eb', 'F', 'G'],
+    'Ab Minor': ['Ab', 'Bb', 'Cb', 'Db', 'Eb', 'Fb', 'Gb'],
+}
+
+
+def get_scale_for_key(key: str) -> List[str]:
+    """
+    Get the 7-note scale for a given key.
+
+    Args:
+        key: Musical key (e.g., 'C Major', 'A Minor')
+
+    Returns:
+        List of 7 note names in scale order
+    """
+    return KEY_SCALES.get(key, KEY_SCALES[DEFAULT_KEY])
+
+
+def get_zone_note(zone: int, key: str) -> str:
+    """
+    Get the note for a specific zone (1-7) in the given key.
+
+    Zone 1 is the leftmost position (first scale degree).
+    Zone 7 is the rightmost position (seventh scale degree).
+
+    Args:
+        zone: Zone number 1-7
+        key: Musical key (e.g., 'C Major', 'A Minor')
+
+    Returns:
+        Note name for that zone
+    """
+    scale = get_scale_for_key(key)
+    # Clamp zone to valid range (1-7)
+    zone_idx = max(0, min(6, zone - 1))
+    return scale[zone_idx]
 
 # Comprehensive chord mappings for all 24 keys
 # Each key maps zones 1-7 to chord triads (I, ii, iii, IV, V, vi, vii°)
@@ -443,6 +507,7 @@ def guitar_zone_to_note(zone: int, key: str = DEFAULT_KEY, octave: int = 3) -> s
     Convert guitar zone (1-7) to root note for the given key.
 
     Guitar plays the root note of the chord corresponding to the zone.
+    Zone 1 (leftmost) = first scale degree, Zone 7 (rightmost) = seventh scale degree.
 
     Args:
         zone: Zone number 1-7
@@ -452,8 +517,7 @@ def guitar_zone_to_note(zone: int, key: str = DEFAULT_KEY, octave: int = 3) -> s
     Returns:
         Note name like 'C3', 'G3'
     """
-    key_roots = KEY_ROOT_NOTES.get(key, KEY_ROOT_NOTES[DEFAULT_KEY])
-    root = key_roots.get(zone, key_roots[1])
+    root = get_zone_note(zone, key)
     return f"{root}{octave}"
 
 

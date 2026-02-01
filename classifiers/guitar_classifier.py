@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from multi_person_tracker import MultiPersonTracker, PersonPose
 from detectors.strum_detector import StrumDetector, StrumEvent
-from audio.music_theory import KEY_CHORD_NAMES, KEY_ROOT_NOTES, DEFAULT_KEY
+from audio.music_theory import KEY_CHORD_NAMES, DEFAULT_KEY, get_zone_note
 
 
 class GuitarClassifier:
@@ -104,9 +104,12 @@ class GuitarClassifier:
         return key_names.get(zone, key_names[1])
 
     def get_root_note(self, zone: int) -> str:
-        """Get root note for current zone and key."""
-        key_roots = KEY_ROOT_NOTES.get(self.key, KEY_ROOT_NOTES[DEFAULT_KEY])
-        return key_roots.get(zone, key_roots[1])
+        """Get root note for current zone and key.
+
+        Zone 1 (leftmost) maps to the first scale degree.
+        Zone 7 (rightmost) maps to the seventh scale degree.
+        """
+        return get_zone_note(zone, self.key)
 
     def process_frame(self, frame, current_time: float = None) -> List[StrumEvent]:
         """
