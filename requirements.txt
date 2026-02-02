@@ -16,6 +16,15 @@ scipy>=1.10.0
 # Audio analysis (for analyze_wav.py)
 librosa>=0.10.0
 
+# Audio export/processing
+soundfile>=0.12.0
+
+# Pitch correction (for autotune)
+psola>=0.0.1
+
+# ElevenLabs API (for voice transformation)
+elevenlabs>=1.0.0
+
 # Claude API (for analyze_wav.py)
 anthropic>=0.18.0
 

@@ -582,13 +582,16 @@ async def mix_audio(config: str = Form(...)):
         mixer = VocalMixer()
         mixed_path = OUTPUT_DIR / f"final_mix_{session_id}.wav"
 
-        mixer.mix_files(
+        mixed_audio = mixer.mix_files(
             str(instrumental_path),
             str(vocals_path),
-            str(mixed_path),
             vocal_volume=mix_config.vocalVolume,
             instrumental_volume=mix_config.instrumentalVolume
         )
+
+        # Normalize and export
+        mixed_audio = mixer.normalize(mixed_audio)
+        mixer.export(mixed_audio, str(mixed_path))
 
         print(f"Mixed audio saved: {mixed_path}")
 
