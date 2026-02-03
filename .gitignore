@@ -1,4 +1,10 @@
 .claude/
-venv/
+.venv/
 output/
 .env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+.python-version

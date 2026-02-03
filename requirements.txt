@@ -1,8 +1,8 @@
 # DigiJam - Body Movement Tracking & Drum Classification
-# For Apple Silicon (M1/M2/M3/M4) Macs
+# For Linux
 
-# MediaPipe for pose detection (Apple Silicon version)
-mediapipe-silicon>=0.9.2
+# MediaPipe for pose detection (0.10.14 has solutions API + Python 3.12 support)
+mediapipe==0.10.14
 
 # Computer vision
 opencv-python>=4.8.0
