@@ -78,7 +78,7 @@ class WebcamRecorder:
         # Piano calibration countdown state
         self.calibration_countdown_active = False
         self.calibration_countdown_start: Optional[float] = None
-        self.CALIBRATION_COUNTDOWN_SECONDS = 3.0
+        self.CALIBRATION_COUNTDOWN_SECONDS = 5.0
         self._start_recording_after_calibration = True
         self.fps: float = 30.0  # Will be updated when webcam opens
 
@@ -124,29 +124,33 @@ class WebcamRecorder:
         if self.is_recording:
             self.session_piano_hits.append(hit)
 
-    def _start_piano_calibration_countdown(self, start_recording_after: bool = True):
+    def _start_countdown(self, start_recording_after: bool = True):
         """
-        Start the 3-second calibration countdown for piano.
+        Start 5-second countdown before recording.
+        For piano: also calibrates hand positions.
 
         Args:
-            start_recording_after: If True, start recording after calibration. If False, just recalibrate.
+            start_recording_after: If True, start recording after countdown. If False, just recalibrate (piano only).
         """
         self.calibration_countdown_active = True
         self.calibration_countdown_start = time.time()
         self._start_recording_after_calibration = start_recording_after
-        # Reset calibration to capture fresh positions
-        self.classifier.reset_calibration()
+
+        # Reset piano calibration if needed
+        if self.instrument == "piano":
+            self.classifier.reset_calibration()
+
         print("\n" + "=" * 50)
-        print("PIANO CALIBRATION")
-        print("Position your hands at the piano boundaries:")
-        print("  - Left hand at the LEFT edge of your virtual piano")
-        print("  - Right hand at the RIGHT edge of your virtual piano")
-        print("Calibrating in 3 seconds...")
+        print("GET READY!")
+        print(f"Recording starts in {int(self.CALIBRATION_COUNTDOWN_SECONDS)} seconds...")
+        if self.instrument == "piano":
+            print("Position hands at piano boundaries")
         print("=" * 50 + "\n")
 
     def _check_calibration_countdown(self, frame) -> bool:
         """
         Check and update calibration countdown state.
+        Works for all instruments - piano calibrates at end, others just start recording.
 
         Args:
             frame: Current video frame for drawing countdown
@@ -161,66 +165,66 @@ class WebcamRecorder:
         remaining = self.CALIBRATION_COUNTDOWN_SECONDS - elapsed
 
         if remaining <= 0:
-            # Countdown finished - calibrate
+            # Countdown finished
             self.calibration_countdown_active = False
 
-            if self.classifier.calibrate_now():
-                print("Piano calibrated successfully!")
-                # Start recording only if requested
-                if self._start_recording_after_calibration:
-                    self._start_recording(frame, self.fps)
-            else:
-                print("Calibration failed - hands not detected. Try again.")
+            # Piano needs calibration
+            if self.instrument == "piano":
+                if self.classifier.calibrate_now():
+                    print("Piano calibrated successfully!")
+                else:
+                    print("Calibration failed - hands not detected. Try again.")
+                    return False
+
+            # Start recording for all instruments
+            if self._start_recording_after_calibration:
+                self._start_recording(frame, self.fps)
 
             return False
 
-        # Draw countdown on frame
+        # Draw semi-transparent overlay
         h, w = frame.shape[:2]
-        countdown_text = f"CALIBRATE IN: {int(remaining) + 1}"
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (0, 0), (w, h), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
 
-        # Large centered countdown
-        font_scale = 2.0
-        thickness = 4
+        # Large countdown number
+        countdown_text = str(int(remaining) + 1)
+        font_scale = 10.0
+        thickness = 20
         (text_w, text_h), _ = cv2.getTextSize(
             countdown_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness
         )
         text_x = (w - text_w) // 2
         text_y = (h + text_h) // 2
 
-        # Draw background
-        cv2.rectangle(
-            frame,
-            (text_x - 20, text_y - text_h - 20),
-            (text_x + text_w + 20, text_y + 20),
-            (0, 0, 0),
-            -1
-        )
-
-        # Draw countdown text
         cv2.putText(
             frame,
             countdown_text,
             (text_x, text_y),
             cv2.FONT_HERSHEY_SIMPLEX,
             font_scale,
-            (0, 255, 255),
+            (255, 255, 255),
             thickness
         )
 
-        # Draw instruction below
-        instruction = "Position hands at piano edges"
-        inst_scale = 0.8
-        (inst_w, inst_h), _ = cv2.getTextSize(
-            instruction, cv2.FONT_HERSHEY_SIMPLEX, inst_scale, 2
+        # Draw instruction below based on instrument
+        if self.instrument == "piano":
+            instruction = "Position hands at piano edges"
+        else:
+            instruction = "GET READY!"
+        inst_scale = 1.5
+        (inst_w, _), _ = cv2.getTextSize(
+            instruction, cv2.FONT_HERSHEY_SIMPLEX, inst_scale, 3
         )
         cv2.putText(
             frame,
             instruction,
-            ((w - inst_w) // 2, text_y + 50),
+            ((w - inst_w) // 2, h // 2 + 120),
             cv2.FONT_HERSHEY_SIMPLEX,
             inst_scale,
-            (255, 255, 255),
-            2
+            (0, 255, 255),
+            3
         )
 
         return True
@@ -602,7 +606,7 @@ class WebcamRecorder:
             self.fps = 30.0
 
         print("Starting webcam feed...")
-        print("Press 'r' or 's' to start recording\n")
+        print("Press 'r' for 5-second countdown, then recording starts\n")
 
         while cap.isOpened():
             ret, frame = cap.read()
@@ -618,8 +622,8 @@ class WebcamRecorder:
             # Draw overlay
             self.classifier.draw_overlay(frame)
 
-            # Handle piano calibration countdown
-            if self.instrument == "piano" and self._check_calibration_countdown(frame):
+            # Handle countdown for all instruments
+            if self._check_calibration_countdown(frame):
                 # During countdown, show frame and continue
                 window_name = f'{self.instrument.capitalize()} Classifier'
                 cv2.imshow(window_name, frame)
@@ -674,7 +678,7 @@ class WebcamRecorder:
                 # Show ready indicator
                 cv2.putText(
                     frame,
-                    "READY - Press 'r' to record",
+                    "READY - Press 'r' for countdown",
                     (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.6,
@@ -711,11 +715,8 @@ class WebcamRecorder:
                 break
             elif key == ord('r'):
                 if not self.is_recording and not self.calibration_countdown_active:
-                    if self.instrument == "piano":
-                        # Start calibration countdown for piano
-                        self._start_piano_calibration_countdown()
-                    else:
-                        self._start_recording(frame, self.fps)
+                    # All instruments use 5-second countdown
+                    self._start_countdown()
             elif key == ord('s'):
                 if self.is_recording:
                     self._stop_recording()
@@ -733,7 +734,7 @@ class WebcamRecorder:
             elif key == ord('p') and self.instrument == "piano":
                 # Recalibrate piano with countdown (no recording)
                 if not self.calibration_countdown_active and not self.is_recording:
-                    self._start_piano_calibration_countdown(start_recording_after=False)
+                    self._start_countdown(start_recording_after=False)
 
         # Cleanup
         if self.is_recording:
@@ -848,9 +849,9 @@ def run_multi_player_session(num_users: int):
     print(f"Key: {key}")
     print("\nInstructions:")
     print("  1. All players stand in position (sorted left to right)")
-    print("  2. Press 'c' to calibrate roles when everyone is visible")
+    print("  2. Press 'r' for 5-second countdown (auto-calibrates + starts recording)")
     print("  3. Roles will be locked based on x-position")
-    print("  4. Press 'r' to start recording")
+    print("  4. Optional: Press 'c' for manual calibration before recording")
     print("  5. Press 's' to stop recording")
     print("  6. Press 'q' to quit")
     print("=" * 50 + "\n")
@@ -861,6 +862,31 @@ def run_multi_player_session(num_users: int):
 
     # Run multi-player loop
     _run_multi_player_loop(session_manager, config)
+
+
+def _draw_countdown_overlay(frame, seconds_remaining: int):
+    """Draw large centered countdown number on frame for multi-player mode."""
+    h, w = frame.shape[:2]
+
+    # Semi-transparent dark overlay
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, 0), (w, h), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+
+    # Large countdown number
+    text = str(seconds_remaining)
+    font_scale = 10.0
+    thickness = 20
+    (text_w, text_h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+    cv2.putText(frame, text, ((w - text_w) // 2, (h + text_h) // 2),
+                cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness)
+
+    # Instruction text below
+    instruction = "GET IN POSITION!"
+    inst_scale = 1.5
+    (inst_w, _), _ = cv2.getTextSize(instruction, cv2.FONT_HERSHEY_SIMPLEX, inst_scale, 3)
+    cv2.putText(frame, instruction, ((w - inst_w) // 2, h // 2 + 120),
+                cv2.FONT_HERSHEY_SIMPLEX, inst_scale, (0, 255, 255), 3)
 
 
 def _run_multi_player_loop(session_manager, config: SessionConfig):
@@ -888,8 +914,13 @@ def _run_multi_player_loop(session_manager, config: SessionConfig):
     output_dir = "output"
     os.makedirs(output_dir, exist_ok=True)
 
+    # Countdown state
+    countdown_active = False
+    countdown_start_time = 0.0
+    COUNTDOWN_SECONDS = 5.0
+
     print("Starting webcam feed...")
-    print("Press 'c' to calibrate roles when all players are visible")
+    print("Press 'r' for 5-second countdown, then recording starts")
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -905,12 +936,51 @@ def _run_multi_player_loop(session_manager, config: SessionConfig):
         # Draw overlay
         session_manager.draw_overlay(frame)
 
-        # Draw calibration/status indicator
+        # Handle countdown
         h, w = frame.shape[:2]
+        if countdown_active:
+            elapsed = time.time() - countdown_start_time
+            remaining = COUNTDOWN_SECONDS - elapsed
+
+            if remaining <= 0:
+                # Countdown finished
+                countdown_active = False
+
+                # Auto-calibrate if needed
+                if session_manager.awaiting_calibration:
+                    persons = session_manager.tracker.last_persons
+                    if len(persons) == config.num_players:
+                        session_manager.calibrate_roles(persons)
+                        session_manager.lock_roles()
+                        print("Roles auto-calibrated!")
+
+                # Start recording if calibration complete
+                if session_manager.calibration_complete:
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    video_path = os.path.join(output_dir, f"multi_session_{timestamp}.mp4")
+                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                    video_writer = cv2.VideoWriter(video_path, fourcc, fps, (w, h))
+                    is_recording = True
+                    session_start_time = time.time()
+                    frame_count = 0
+                    session_manager.clear_events()
+                    print(f"Recording started: {video_path}")
+                else:
+                    print("Calibration failed - not enough players detected")
+            else:
+                # Draw countdown overlay and continue
+                _draw_countdown_overlay(frame, int(remaining) + 1)
+                cv2.imshow('Multi-Player Session', frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    break
+                continue
+
+        # Draw calibration/status indicator
         if session_manager.awaiting_calibration:
             cv2.putText(
                 frame,
-                "WAITING FOR CALIBRATION - Press 'c' when all players visible",
+                "WAITING - Press 'r' to start (5s countdown + auto-calibrate)",
                 (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
@@ -969,7 +1039,7 @@ def _run_multi_player_loop(session_manager, config: SessionConfig):
             )
 
         # Draw multi-player status at bottom
-        status_text = f"MULTI-PLAYER | {config.num_players} users | Key: {config.key} | 'q'=quit"
+        status_text = f"MULTI-PLAYER | {config.num_players} users | 'r'=start 's'=stop 'q'=quit"
         cv2.putText(
             frame,
             status_text,
@@ -1003,19 +1073,11 @@ def _run_multi_player_loop(session_manager, config: SessionConfig):
                     print(f"Need {config.num_players} players, detected {len(persons)}")
 
         elif key == ord('r'):
-            if not is_recording and session_manager.calibration_complete:
-                # Start recording
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                video_path = os.path.join(output_dir, f"multi_session_{timestamp}.mp4")
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                video_writer = cv2.VideoWriter(video_path, fourcc, fps, (w, h))
-
-                is_recording = True
-                session_start_time = time.time()
-                frame_count = 0
-                session_manager.clear_events()
-
-                print(f"\nRecording started: {video_path}")
+            if not is_recording and not countdown_active:
+                # Start 5-second countdown (will auto-calibrate and record)
+                countdown_active = True
+                countdown_start_time = time.time()
+                print("\n5-second countdown - get in position!")
 
         elif key == ord('s'):
             if is_recording:

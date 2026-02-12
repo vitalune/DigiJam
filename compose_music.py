@@ -47,6 +47,13 @@ load_dotenv()
 # Output directory for generated music
 MUSIC_OUTPUT_DIR = Path("output/music")
 
+# AI support level volume presets for melody/instrumental mixing
+AI_VOLUME_PRESETS: Dict[str, Dict[str, float]] = {
+    "low":    {"melody": 0.2, "instrumental": 1.0},   # Melody as subtle background
+    "medium": {"melody": 0.5, "instrumental": 0.6},   # Balanced collaboration
+    "high":   {"melody": 0.7, "instrumental": 0.4},   # Melody as primary
+}
+
 
 @dataclass
 class CompositionConfig:
@@ -389,6 +396,26 @@ class MelodyMixer:
             if pcm_sample_rate != self.sample_rate:
                 new_len = int(len(data) * self.sample_rate / pcm_sample_rate)
                 data = resample(data, new_len).astype(np.float32)
+
+        elif format_hint.startswith("mp3_"):
+            # MP3 format hint but no magic bytes detected - try decoding anyway
+            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
+                tmp.write(audio_bytes)
+                tmp_path = tmp.name
+
+            try:
+                data, rate = sf.read(tmp_path, dtype='float32')
+
+                # Convert to mono if stereo
+                if len(data.shape) > 1:
+                    data = data.mean(axis=1)
+
+                # Resample if needed
+                if rate != self.sample_rate:
+                    new_len = int(len(data) * self.sample_rate / rate)
+                    data = resample(data, new_len).astype(np.float32)
+            finally:
+                os.unlink(tmp_path)
         else:
             raise ValueError(f"Unsupported audio format: {format_hint}")
 
@@ -427,6 +454,31 @@ class MelodyMixer:
         mixed = original + melody
 
         return mixed
+
+    def mix_with_ai_level(
+        self,
+        original: np.ndarray,
+        melody: np.ndarray,
+        ai_support_level: str = "low"
+    ) -> np.ndarray:
+        """
+        Mix melody with original track using AI support level presets.
+
+        Args:
+            original: Original track audio (user's instrumental)
+            melody: Generated melody audio
+            ai_support_level: "low", "medium", or "high"
+
+        Returns:
+            Mixed audio as numpy array
+        """
+        preset = AI_VOLUME_PRESETS.get(ai_support_level, AI_VOLUME_PRESETS["low"])
+        return self.mix(
+            original=original,
+            melody=melody,
+            melody_volume=preset["melody"],
+            original_volume=preset["instrumental"]
+        )
 
     def normalize(self, audio: np.ndarray, target_peak: float = 0.95, max_gain: float = 10.0) -> np.ndarray:
         """Normalize audio to target peak level with gain limiting."""
@@ -677,10 +729,10 @@ def main():
     # Build config
     # Use PCM format when mixing is needed (no ffmpeg dependency)
     if args.input and not args.no_mix:
-        # Force WAV format for mixing
-        output_format = "pcm_44100"
+        # Force MP3 format for mixing
+        output_format = "mp3_44100_128"
     else:
-        output_format = args.format if args.format != "wav" else "pcm_44100"
+        output_format = args.format if args.format != "wav" else "mp3_44100_128"
 
     config = CompositionConfig(
         output_format=output_format,

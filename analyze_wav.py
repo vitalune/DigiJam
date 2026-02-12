@@ -20,9 +20,9 @@ import json
 import os
 import re
 import sys
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 
 import numpy as np
 import librosa
@@ -194,6 +194,57 @@ class AudioFeatures:
 
     # Config source
     config_file: Optional[str] = None
+
+
+@dataclass
+class SongSection:
+    """Represents a section of a song with timing and content for vocals generation."""
+
+    name: str                           # "intro", "verse1", "chorus1", "bridge", "outro"
+    start_time: float                   # Start time in seconds
+    end_time: float                     # End time in seconds
+    mood: str                           # "building", "energetic", "contemplative", "triumphant"
+    energy_level: str                   # "low", "medium", "high"
+    lyrics: Optional[str] = None        # Lyrics text (None for instrumental sections)
+    voice_id: Optional[str] = None      # Selected voice ID for TTS
+    suggested_voice_style: str = ""     # "warm", "powerful", "soft", etc.
+    is_user_section: bool = False       # For medium mode: True = gap for user participation
+
+    @property
+    def duration(self) -> float:
+        """Duration in seconds."""
+        return self.end_time - self.start_time
+
+
+@dataclass
+class SongStructure:
+    """Complete song structure with all sections for AI vocals generation."""
+
+    total_duration: float
+    bpm: float
+    key: str
+    sections: List[SongSection] = field(default_factory=list)
+
+    def get_vocal_sections(self) -> List[SongSection]:
+        """Return only sections that have lyrics (non-user sections for medium mode)."""
+        return [s for s in self.sections if s.lyrics and not s.is_user_section]
+
+    def get_user_sections(self) -> List[SongSection]:
+        """Return only sections marked for user participation (medium mode)."""
+        return [s for s in self.sections if s.is_user_section]
+
+    def get_ai_sections(self) -> List[SongSection]:
+        """Return only sections where AI generates vocals."""
+        return [s for s in self.sections if s.lyrics and not s.is_user_section]
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "total_duration": self.total_duration,
+            "bpm": self.bpm,
+            "key": self.key,
+            "sections": [asdict(s) for s in self.sections],
+        }
 
 
 class FeatureExtractor:

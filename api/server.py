@@ -58,11 +58,14 @@ class SessionConfig(BaseModel):
     bpm: int
     keyNote: str
     keyMode: str
+    aiSupportLevel: str = "low"  # "low" | "medium" | "high"
+    includeVocals: bool = False
 
 
 class ProcessingResult(BaseModel):
     status: str
     audioUrl: str
+    videoUrl: str
     duration: float
 
 
@@ -365,9 +368,23 @@ async def generate_music(
 
         print(f"\nAudio rendered: {audio_path} ({duration:.2f}s)")
 
+        # Move video to videos directory for serving
+        videos_dir = OUTPUT_DIR / "videos"
+        videos_dir.mkdir(exist_ok=True)
+        video_filename = f"recording_{session_id}.mp4"
+        final_video_path = videos_dir / video_filename
+
+        try:
+            if mp4_path.exists():
+                import shutil
+                shutil.move(str(mp4_path), str(final_video_path))
+                print(f"Video saved: {final_video_path}")
+        except Exception as e:
+            print(f"Video move warning: {e}")
+
         # Cleanup temp files
         try:
-            if webm_path.exists() and webm_path != mp4_path:
+            if webm_path.exists():
                 webm_path.unlink()
         except Exception as e:
             print(f"Cleanup warning: {e}")
@@ -375,6 +392,7 @@ async def generate_music(
         return ProcessingResult(
             status="completed",
             audioUrl=f"/api/files/audio/{audio_filename}",
+            videoUrl=f"/api/files/video/{video_filename}",
             duration=duration
         )
 
@@ -728,6 +746,527 @@ async def get_video_file(filename: str):
         media_type="video/mp4",
         filename=filename
     )
+
+
+# ============================================================================
+# AI SUPPORT LEVEL ENDPOINTS
+# ============================================================================
+
+class AIProcessingConfig(BaseModel):
+    """Configuration for AI processing endpoint."""
+    aiSupportLevel: str = "low"  # "low" | "medium" | "high"
+    instrumentalUrl: str
+    keyNote: str
+    keyMode: str
+    bpm: int
+    genre: str = "pop"
+    # Low AI mode - manual voice selection
+    voiceId: Optional[str] = None
+
+
+class AIProcessingResult(BaseModel):
+    """Result from AI processing endpoint."""
+    status: str
+    mode: str
+    audioUrl: str
+    # Medium mode additional info
+    userSections: Optional[List[dict]] = None
+    # High mode additional info
+    sections: Optional[List[dict]] = None
+
+
+class UserVocalsConfig(BaseModel):
+    """Configuration for adding user vocals (medium mode phase 2)."""
+    masterTrackUrl: str
+    userVocalsUrl: str
+    voiceId: Optional[str] = None  # For voice transformation
+
+
+@app.post("/api/process-with-ai", response_model=AIProcessingResult)
+async def process_with_ai(config: AIProcessingConfig):
+    """
+    Main AI processing endpoint that routes based on aiSupportLevel.
+
+    - Low: Generates supplemental melody, user sings manually
+    - Medium: Generates AI vocals with gaps, returns master for user recording
+    - High: Generates complete AI vocals, no user recording needed
+    """
+    try:
+        session_id = str(uuid.uuid4())[:8]
+        key = f"{config.keyNote} {config.keyMode}"
+
+        if config.aiSupportLevel == "low":
+            return await process_low_ai_mode(config, session_id, key)
+        elif config.aiSupportLevel == "medium":
+            return await process_medium_ai_mode(config, session_id, key)
+        else:  # high
+            return await process_high_ai_mode(config, session_id, key)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def process_low_ai_mode(config: AIProcessingConfig, session_id: str, key: str) -> AIProcessingResult:
+    """
+    Low AI mode: Generate supplemental melody at low volume.
+    User will record vocals manually.
+    """
+    from compose_music import MusicComposer, MelodyMixer, CompositionConfig, AI_VOLUME_PRESETS
+
+    # Download instrumental
+    # For now, assume instrumentalUrl is a local file path or we need to download it
+    instrumental_path = config.instrumentalUrl
+
+    # Generate melody
+    composer = MusicComposer()
+    prompt = f"Instrumental melody at {config.bpm} BPM in {key}, {config.genre} style, subtle background accompaniment"
+
+    comp_config = CompositionConfig(
+        output_format="mp3_44100_128",
+        force_instrumental=True,
+    )
+
+    melody_bytes = composer.compose_from_prompt(prompt, comp_config)
+
+    # Mix with low AI volumes
+    mixer = MelodyMixer()
+    instrumental_audio = mixer.load_wav(Path(instrumental_path))
+    melody_audio = mixer.load_audio_bytes(melody_bytes, format_hint="mp3_44100_128", pcm_sample_rate=44100, pcm_channels=2)
+
+    volumes = AI_VOLUME_PRESETS["low"]
+    mixed_audio = mixer.mix(
+        original=instrumental_audio,
+        melody=melody_audio,
+        melody_volume=volumes["melody"],
+        original_volume=volumes["instrumental"]
+    )
+    mixed_audio = mixer.normalize(mixed_audio)
+
+    # Save output
+    output_filename = f"low_ai_{session_id}.wav"
+    output_path = OUTPUT_DIR / "music" / output_filename
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    mixer.export(mixed_audio, output_path)
+
+    return AIProcessingResult(
+        status="success",
+        mode="low",
+        audioUrl=f"/api/files/audio/{output_filename}",
+    )
+
+
+async def process_medium_ai_mode(config: AIProcessingConfig, session_id: str, key: str) -> AIProcessingResult:
+    """
+    Medium AI mode: Generate AI vocals with gaps for user participation.
+    Returns master track - user records vocals in phase 2.
+    """
+    from vocals.medium_ai_pipeline import MediumAIPipeline, MediumAIPipelineConfig
+
+    instrumental_path = config.instrumentalUrl
+
+    # Run phase 1
+    pipeline = MediumAIPipeline()
+    pipeline_config = MediumAIPipelineConfig(genre=config.genre)
+
+    output_filename = f"medium_ai_master_{session_id}.wav"
+    output_path = OUTPUT_DIR / "music" / output_filename
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    results = pipeline.phase1_generate_master_with_gaps(
+        instrumental_path=instrumental_path,
+        output_path=str(output_path),
+        config=pipeline_config,
+        verbose=False
+    )
+
+    return AIProcessingResult(
+        status="success",
+        mode="medium",
+        audioUrl=f"/api/files/audio/{output_filename}",
+        userSections=results.get("user_sections", []),
+    )
+
+
+async def process_high_ai_mode(config: AIProcessingConfig, session_id: str, key: str) -> AIProcessingResult:
+    """
+    High AI mode: Generate complete AI vocals.
+    No user recording needed.
+    """
+    from vocals.high_ai_pipeline import HighAIPipeline, HighAIPipelineConfig
+
+    instrumental_path = config.instrumentalUrl
+
+    # Run full pipeline
+    pipeline = HighAIPipeline()
+    pipeline_config = HighAIPipelineConfig(genre=config.genre)
+
+    output_filename = f"high_ai_{session_id}.wav"
+    output_path = OUTPUT_DIR / "music" / output_filename
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    results = pipeline.process(
+        instrumental_path=instrumental_path,
+        output_path=str(output_path),
+        config=pipeline_config,
+        verbose=False
+    )
+
+    return AIProcessingResult(
+        status="success",
+        mode="high",
+        audioUrl=f"/api/files/audio/{output_filename}",
+        sections=results.get("sections", []),
+    )
+
+
+@app.post("/api/add-user-vocals", response_model=AIProcessingResult)
+async def add_user_vocals(config: UserVocalsConfig):
+    """
+    Medium AI mode phase 2: Add user-recorded vocals to master track.
+    """
+    try:
+        from vocals.medium_ai_pipeline import MediumAIPipeline, MediumAIPipelineConfig
+        from vocals.vocal_config import VocalConfig
+
+        session_id = str(uuid.uuid4())[:8]
+
+        pipeline = MediumAIPipeline()
+        pipeline_config = MediumAIPipelineConfig()
+
+        # Set voice transformation if requested
+        if config.voiceId:
+            pipeline_config.transform_user_vocals = True
+            pipeline_config.user_voice_config = VocalConfig(voice_id=config.voiceId)
+
+        output_filename = f"medium_ai_final_{session_id}.wav"
+        output_path = OUTPUT_DIR / "music" / output_filename
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        results = pipeline.phase2_add_user_vocals(
+            master_track_path=config.masterTrackUrl,
+            user_vocals_path=config.userVocalsUrl,
+            output_path=str(output_path),
+            config=pipeline_config,
+            verbose=False
+        )
+
+        return AIProcessingResult(
+            status="success",
+            mode="medium",
+            audioUrl=f"/api/files/audio/{output_filename}",
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# NEW PIPELINE ENDPOINTS (with video generation)
+# ============================================================================
+
+class PipelineResponse(BaseModel):
+    """Response from pipeline endpoints."""
+    status: str
+    videoUrl: str
+    audioUrl: str
+    duration: float
+    sections: Optional[List[dict]] = None
+
+
+class HighPipelineConfig(BaseModel):
+    """Configuration for high AI pipeline."""
+    sessionId: str
+    instrumentalUrl: str
+    bpm: float = 120
+    key: str = "C Major"
+    genre: str = "pop"
+    lyricsPrompt: Optional[str] = None
+    voiceId: Optional[str] = None
+
+
+class MediumPipelineConfig(BaseModel):
+    """Configuration for medium AI pipeline."""
+    sessionId: str
+    instrumentalUrl: str
+    bpm: float = 120
+    key: str = "C Major"
+    genre: str = "pop"
+    lyricsPrompt: Optional[str] = None
+    voiceId: str
+
+
+class LowPipelineConfig(BaseModel):
+    """Configuration for low AI pipeline."""
+    sessionId: str
+    instrumentalUrl: str
+    bpm: float = 120
+    key: str = "C Major"
+    voiceId: str
+
+
+def get_file_from_url(url: str) -> Path:
+    """Convert API URL to local file path."""
+    # Handle different URL patterns
+    if url.startswith("/api/files/audio/"):
+        filename = url.split("/api/files/audio/")[-1]
+        return OUTPUT_DIR / filename
+    elif url.startswith("/api/files/video/"):
+        filename = url.split("/api/files/video/")[-1]
+        return OUTPUT_DIR / "videos" / filename
+    elif url.startswith("/api/files/vocals/"):
+        filename = url.split("/api/files/vocals/")[-1]
+        return OUTPUT_DIR / "vocals" / filename
+    else:
+        # Assume it's already a path
+        return Path(url)
+
+
+@app.post("/api/pipeline/high", response_model=PipelineResponse)
+async def pipeline_high(
+    session_id: str = Form(...),
+    instrumental_url: str = Form(...),
+    bpm: float = Form(120),
+    key: str = Form("C Major"),
+    genre: str = Form("pop"),
+    lyrics_prompt: Optional[str] = Form(None),
+    voice_id: Optional[str] = Form(None),
+):
+    """
+    Full AI automation pipeline with video generation.
+
+    1. Generate melody → mix with instrumental (high AI volumes)
+    2. Generate song structure and complete lyrics
+    3. Select voices automatically (or use provided voice_id)
+    4. Synthesize all vocals via TTS
+    5. Mix final audio with ducking
+    6. Generate music video (loop short videos)
+
+    No user vocals required.
+    """
+    try:
+        from pipelines.high_pipeline import HighPipeline, HighPipelineConfig as HPConfig
+
+        print(f"\n{'='*50}")
+        print(f"HIGH AI PIPELINE: {session_id}")
+        print(f"BPM: {bpm}, Key: {key}, Genre: {genre}")
+        if lyrics_prompt:
+            print(f"Lyrics prompt: {lyrics_prompt[:50]}...")
+        print(f"{'='*50}\n")
+
+        # Get instrumental file path
+        instrumental_path = get_file_from_url(instrumental_url)
+        if not instrumental_path.exists():
+            raise HTTPException(status_code=404, detail=f"Instrumental file not found: {instrumental_url}")
+
+        # Create pipeline and config
+        pipeline = HighPipeline(output_dir=OUTPUT_DIR)
+        config = HPConfig(
+            genre=genre,
+            lyrics_prompt=lyrics_prompt or "",
+            voice_id=voice_id,
+        )
+
+        # Run pipeline
+        result = pipeline.process(
+            session_id=session_id,
+            instrumental_path=str(instrumental_path),
+            bpm=bpm,
+            key=key,
+            config=config,
+            verbose=True
+        )
+
+        return PipelineResponse(
+            status="completed",
+            videoUrl=f"/api/files/video/{result.video_path.name}",
+            audioUrl=f"/api/files/audio/{result.audio_path.name}",
+            duration=result.duration,
+            sections=result.sections,
+        )
+
+    except Exception as e:
+        print(f"High pipeline error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/pipeline/medium", response_model=PipelineResponse)
+async def pipeline_medium(
+    session_id: str = Form(...),
+    instrumental_url: str = Form(...),
+    bpm: float = Form(120),
+    key: str = Form("C Major"),
+    genre: str = Form("pop"),
+    lyrics_prompt: str = Form(...),
+    voice_id: str = Form(...),
+    user_vocals: UploadFile = File(...),
+):
+    """
+    Collaborative mode pipeline with video generation.
+
+    1. Generate melody → mix with instrumental (balanced volumes)
+    2. Generate song structure with partial lyrics (AI + gaps)
+    3. Synthesize AI vocals for non-gap sections
+    4. Transform user vocals to selected voice
+    5. Mix AI vocals + user vocals
+    6. Generate music video
+
+    User vocals required for gap sections.
+    """
+    try:
+        from pipelines.medium_pipeline import MediumPipeline, MediumPipelineConfig as MPConfig
+
+        print(f"\n{'='*50}")
+        print(f"MEDIUM AI PIPELINE: {session_id}")
+        print(f"BPM: {bpm}, Key: {key}, Genre: {genre}")
+        print(f"Voice ID: {voice_id}")
+        print(f"Lyrics prompt: {lyrics_prompt[:50]}...")
+        print(f"{'='*50}\n")
+
+        # Get instrumental file path
+        instrumental_path = get_file_from_url(instrumental_url)
+        if not instrumental_path.exists():
+            raise HTTPException(status_code=404, detail=f"Instrumental file not found: {instrumental_url}")
+
+        # Save user vocals
+        vocals_dir = OUTPUT_DIR / "vocals"
+        vocals_dir.mkdir(exist_ok=True)
+
+        user_vocals_path = vocals_dir / f"user_vocals_{session_id}.webm"
+        with open(user_vocals_path, "wb") as f:
+            content = await user_vocals.read()
+            f.write(content)
+
+        # Convert to WAV
+        user_vocals_wav = vocals_dir / f"user_vocals_{session_id}.wav"
+        if not convert_webm_to_wav(str(user_vocals_path), str(user_vocals_wav)):
+            raise HTTPException(status_code=500, detail="User vocals conversion failed")
+
+        # Create pipeline and config
+        pipeline = MediumPipeline(output_dir=OUTPUT_DIR)
+        config = MPConfig(
+            genre=genre,
+            lyrics_prompt=lyrics_prompt,
+            voice_id=voice_id,
+        )
+
+        # Run pipeline
+        result = pipeline.process(
+            session_id=session_id,
+            instrumental_path=str(instrumental_path),
+            user_vocals=str(user_vocals_wav),
+            voice_id=voice_id,
+            lyrics_prompt=lyrics_prompt,
+            bpm=bpm,
+            key=key,
+            config=config,
+            verbose=True
+        )
+
+        # Cleanup temp files
+        try:
+            user_vocals_path.unlink()
+        except:
+            pass
+
+        return PipelineResponse(
+            status="completed",
+            videoUrl=f"/api/files/video/{result.video_path.name}",
+            audioUrl=f"/api/files/audio/{result.audio_path.name}",
+            duration=result.duration,
+            sections=result.sections,
+        )
+
+    except Exception as e:
+        print(f"Medium pipeline error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/pipeline/low", response_model=PipelineResponse)
+async def pipeline_low(
+    session_id: str = Form(...),
+    instrumental_url: str = Form(...),
+    bpm: float = Form(120),
+    key: str = Form("C Major"),
+    voice_id: str = Form(...),
+    user_vocals: UploadFile = File(...),
+):
+    """
+    User-driven pipeline with AI voice transformation and video generation.
+
+    1. Generate subtle background melody (low volume)
+    2. Transform user vocals to selected voice style
+    3. Mix transformed vocals + melody + instrumental
+    4. Generate music video
+
+    User vocals required - AI enhances with voice transformation.
+    """
+    try:
+        from pipelines.low_pipeline import LowPipeline, LowPipelineConfig as LPConfig
+
+        print(f"\n{'='*50}")
+        print(f"LOW AI PIPELINE: {session_id}")
+        print(f"BPM: {bpm}, Key: {key}")
+        print(f"Voice ID: {voice_id}")
+        print(f"{'='*50}\n")
+
+        # Get instrumental file path
+        instrumental_path = get_file_from_url(instrumental_url)
+        if not instrumental_path.exists():
+            raise HTTPException(status_code=404, detail=f"Instrumental file not found: {instrumental_url}")
+
+        # Save user vocals
+        vocals_dir = OUTPUT_DIR / "vocals"
+        vocals_dir.mkdir(exist_ok=True)
+
+        user_vocals_path = vocals_dir / f"user_vocals_{session_id}.webm"
+        with open(user_vocals_path, "wb") as f:
+            content = await user_vocals.read()
+            f.write(content)
+
+        # Convert to WAV
+        user_vocals_wav = vocals_dir / f"user_vocals_{session_id}.wav"
+        if not convert_webm_to_wav(str(user_vocals_path), str(user_vocals_wav)):
+            raise HTTPException(status_code=500, detail="User vocals conversion failed")
+
+        # Create pipeline and config
+        pipeline = LowPipeline(output_dir=OUTPUT_DIR)
+        config = LPConfig(voice_id=voice_id)
+
+        # Run pipeline
+        result = pipeline.process(
+            session_id=session_id,
+            instrumental_path=str(instrumental_path),
+            user_vocals=str(user_vocals_wav),
+            voice_id=voice_id,
+            bpm=bpm,
+            key=key,
+            config=config,
+            verbose=True
+        )
+
+        # Cleanup temp files
+        try:
+            user_vocals_path.unlink()
+        except:
+            pass
+
+        return PipelineResponse(
+            status="completed",
+            videoUrl=f"/api/files/video/{result.video_path.name}",
+            audioUrl=f"/api/files/audio/{result.audio_path.name}",
+            duration=result.duration,
+            sections=[],
+        )
+
+    except Exception as e:
+        print(f"Low pipeline error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":
