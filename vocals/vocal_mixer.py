@@ -8,9 +8,13 @@ import numpy as np
 from scipy.io import wavfile
 from scipy.signal import resample
 from pathlib import Path
-from typing import Union, Optional
+from typing import Union, Optional, Dict, List
 import io
 import wave
+import sys
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 class VocalMixer:
@@ -217,3 +221,187 @@ class VocalMixer:
 
         # Write file
         wavfile.write(filepath, self.sample_rate, audio_int16)
+
+
+class SectionMixer:
+    """Mixes TTS vocals into tracks at section-specific timestamps with ducking."""
+
+    def __init__(self, sample_rate: int = 44100):
+        """
+        Initialize the section mixer.
+
+        Args:
+            sample_rate: Output sample rate (default 44100 Hz)
+        """
+        self.sample_rate = sample_rate
+
+    def mix_section_vocals(
+        self,
+        main_track: np.ndarray,
+        section_audio: Dict[str, np.ndarray],
+        section_timings: Dict[str, tuple],
+        vocal_volume: float = 0.85,
+        duck_amount: float = 0.3,
+        crossfade_ms: float = 50.0
+    ) -> np.ndarray:
+        """
+        Mix section vocals into main track at precise timestamps with ducking.
+
+        Args:
+            main_track: Main instrumental+melody track
+            section_audio: Dict mapping section_name -> audio array
+            section_timings: Dict mapping section_name -> (start_time, end_time) in seconds
+            vocal_volume: Volume multiplier for vocals (default 0.85)
+            duck_amount: How much to reduce instrumental during vocals (0.3 = 30% reduction)
+            crossfade_ms: Crossfade duration in milliseconds for smooth transitions
+
+        Returns:
+            Final mixed audio as numpy array
+        """
+        output = main_track.copy()
+        crossfade_samples = int(crossfade_ms * self.sample_rate / 1000)
+
+        for section_name, vocals in section_audio.items():
+            if section_name not in section_timings:
+                continue
+
+            start_time, end_time = section_timings[section_name]
+            start_sample = int(start_time * self.sample_rate)
+            end_sample = start_sample + len(vocals)
+
+            # Ensure we don't exceed track length
+            if start_sample >= len(output):
+                continue
+
+            if end_sample > len(output):
+                vocals = vocals[:len(output) - start_sample]
+                end_sample = len(output)
+
+            # Create ducking envelope for this section
+            duck_envelope = self._create_duck_envelope(
+                len(vocals),
+                duck_amount,
+                crossfade_samples
+            )
+
+            # Apply ducking to main track in this region
+            output[start_sample:end_sample] *= duck_envelope
+
+            # Add vocals
+            output[start_sample:end_sample] += vocals * vocal_volume
+
+        return output
+
+    def _create_duck_envelope(
+        self,
+        length: int,
+        duck_amount: float,
+        crossfade_samples: int
+    ) -> np.ndarray:
+        """
+        Create a ducking envelope for smooth volume reduction.
+
+        Args:
+            length: Length of the envelope in samples
+            duck_amount: Amount to duck (0.3 = reduce by 30%)
+            crossfade_samples: Fade in/out duration
+
+        Returns:
+            Envelope as numpy array (values from duck_amount to 1.0)
+        """
+        envelope = np.ones(length) * (1.0 - duck_amount)
+
+        # Fade in at start (1.0 -> ducked level)
+        if crossfade_samples > 0 and crossfade_samples < length // 2:
+            fade_in = np.linspace(1.0, 1.0 - duck_amount, crossfade_samples)
+            envelope[:crossfade_samples] = fade_in
+
+            # Fade out at end (ducked level -> 1.0)
+            fade_out = np.linspace(1.0 - duck_amount, 1.0, crossfade_samples)
+            envelope[-crossfade_samples:] = fade_out
+
+        return envelope.astype(np.float32)
+
+    def mix_from_structure(
+        self,
+        main_track: np.ndarray,
+        section_audio: Dict[str, np.ndarray],
+        sections: List,
+        vocal_volume: float = 0.85,
+        duck_amount: float = 0.3
+    ) -> np.ndarray:
+        """
+        Mix section vocals using SongSection objects for timing.
+
+        Args:
+            main_track: Main instrumental+melody track
+            section_audio: Dict mapping section_name -> audio array
+            sections: List of SongSection objects
+            vocal_volume: Volume multiplier for vocals
+            duck_amount: How much to reduce instrumental during vocals
+
+        Returns:
+            Final mixed audio as numpy array
+        """
+        # Build timing dict from sections
+        section_timings = {}
+        for section in sections:
+            if hasattr(section, 'name') and hasattr(section, 'start_time') and hasattr(section, 'end_time'):
+                # Skip user sections (no AI vocals)
+                if hasattr(section, 'is_user_section') and section.is_user_section:
+                    continue
+                section_timings[section.name] = (section.start_time, section.end_time)
+
+        return self.mix_section_vocals(
+            main_track=main_track,
+            section_audio=section_audio,
+            section_timings=section_timings,
+            vocal_volume=vocal_volume,
+            duck_amount=duck_amount,
+        )
+
+    def add_user_vocals(
+        self,
+        main_track: np.ndarray,
+        user_vocals: np.ndarray,
+        vocal_volume: float = 1.0,
+        duck_amount: float = 0.2
+    ) -> np.ndarray:
+        """
+        Add user-recorded vocals on top of AI-generated track (for medium mode).
+
+        Args:
+            main_track: Main track with AI vocals already mixed
+            user_vocals: User's recorded vocals (full track length or partial)
+            vocal_volume: Volume multiplier for user vocals
+            duck_amount: How much to duck existing audio during user vocals
+
+        Returns:
+            Final mixed audio
+        """
+        # Detect where user vocals are (non-silent regions)
+        threshold = 0.01
+        has_audio = np.abs(user_vocals) > threshold
+
+        # Dilate the mask to catch attack/decay
+        from scipy.ndimage import binary_dilation
+        structure = np.ones(int(0.1 * self.sample_rate))  # 100ms dilation
+        has_audio = binary_dilation(has_audio, structure=structure)
+
+        # Create output
+        output = main_track.copy()
+
+        # Ensure arrays match length
+        if len(user_vocals) < len(output):
+            user_vocals = np.pad(user_vocals, (0, len(output) - len(user_vocals)))
+        elif len(user_vocals) > len(output):
+            user_vocals = user_vocals[:len(output)]
+            has_audio = has_audio[:len(output)]
+
+        # Apply ducking where user vocals are present
+        output[has_audio] *= (1.0 - duck_amount)
+
+        # Add user vocals
+        output += user_vocals * vocal_volume
+
+        return output
