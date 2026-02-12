@@ -8,3 +8,10 @@ __pycache__/
 *.py[cod]
 *.pyc
 .python-version
+frontend/vocals/magic_card.md
+frontend/vocals/avatar_circles.md
+frontend/vocals/animated_grid_pattern.md
+frontend/vocals/animated_gradient_text.md
+frontend/loading/alive_progress.md
+frontend/config/theme_toggler.md
+frontend/config/shine_border.md
