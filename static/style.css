@@ -1,0 +1,289 @@
+/* ========== RESET & BASE ========== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; font-family: 'Inter', sans-serif; }
+
+/* ========== PAGES ========== */
+.page {
+  position: fixed; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.5s ease;
+  overflow-y: auto;
+}
+.page.active { opacity: 1; pointer-events: all; }
+.page.dark { background: #232323; color: #eee; }
+.page.light { background: #fff; color: #0a0a0a; }
+
+/* ========== HOME ========== */
+.home-content {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 1.5rem; text-align: center; padding: 2rem; max-width: 700px;
+}
+
+/* Video Text Effect */
+.video-text-container {
+  position: relative; width: 100%; height: 200px; overflow: hidden;
+}
+.video-text-container video {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+}
+.video-text-title {
+  position: relative; z-index: 1;
+  font-size: clamp(4rem, 12vw, 8rem); font-weight: 900;
+  line-height: 200px; text-align: center;
+  background: transparent; color: transparent;
+  -webkit-background-clip: text; background-clip: text;
+  mix-blend-mode: screen;
+  /* fallback — the video shows through the text via mix-blend-mode */
+}
+/* Make the text a "window" into the video */
+.video-text-container video { z-index: 0; }
+.video-text-title {
+  background: #232323; -webkit-text-fill-color: transparent;
+  -webkit-background-clip: text; background-clip: text;
+  mix-blend-mode: multiply;
+}
+/* Invert approach: SVG mask method */
+.video-text-container {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100%25' height='100%25'%3E%3Ctext x='50%25' y='55%25' font-size='18vw' font-weight='900' text-anchor='middle' dominant-baseline='middle' font-family='Inter,sans-serif'%3EDigiJam%3C/text%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100%25' height='100%25'%3E%3Ctext x='50%25' y='55%25' font-size='18vw' font-weight='900' text-anchor='middle' dominant-baseline='middle' font-family='Inter,sans-serif'%3EDigiJam%3C/text%3E%3C/svg%3E");
+  -webkit-mask-size: contain; mask-size: contain;
+  -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+  -webkit-mask-position: center; mask-position: center;
+}
+.video-text-title { position: absolute; opacity: 0; } /* hidden, mask does the work */
+
+.home-caption {
+  font-size: 1.4rem; font-weight: 500; line-height: 1.6;
+}
+
+/* Text Highlights */
+.highlight {
+  padding: 0.1em 0.3em; border-radius: 4px;
+  background-size: 200% 100%;
+  animation: highlightSweep 0.6s ease forwards;
+}
+.highlight-purple { background: linear-gradient(90deg, transparent 50%, rgba(213,27,219,0.3) 50%); background-size: 200% 100%; background-position: right; }
+.highlight-yellow { background: linear-gradient(90deg, transparent 50%, rgba(238,225,60,0.35) 50%); background-size: 200% 100%; background-position: right; }
+.highlight-purple.animate { background-position: left; }
+.highlight-yellow.animate { background-position: left; }
+@keyframes highlightSweep {
+  to { background-position: left; }
+}
+
+.home-description {
+  font-size: 1rem; color: #aaa; line-height: 1.7; max-width: 540px;
+}
+
+/* ========== SHINY BUTTON ========== */
+.shiny-btn {
+  position: relative; display: inline-block;
+  padding: 0.85rem 2.2rem; border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.15);
+  background: rgba(255,255,255,0.05);
+  cursor: pointer; overflow: hidden;
+  transition: transform 0.15s ease, box-shadow 0.3s ease;
+  text-decoration: none;
+}
+.shiny-btn:hover { transform: scale(1.03); box-shadow: 0 0 30px rgba(213,27,219,0.15); }
+.shiny-btn:active { transform: scale(0.97); }
+.shiny-btn-text {
+  position: relative; z-index: 2;
+  font-size: 0.95rem; font-weight: 600; letter-spacing: 0.05em;
+  text-transform: uppercase; color: #eee;
+}
+.shiny-btn-shine {
+  position: absolute; inset: 0; z-index: 1;
+  background: linear-gradient(-75deg, transparent 30%, rgba(213,27,219,0.25) 50%, transparent 70%);
+  background-size: 250% 100%;
+  animation: shineSwipe 3s ease-in-out infinite;
+}
+@keyframes shineSwipe {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.shiny-btn-light {
+  border-color: rgba(0,0,0,0.15); background: rgba(0,0,0,0.05);
+}
+.shiny-btn-light .shiny-btn-text { color: #0a0a0a; }
+.shiny-btn-light .shiny-btn-shine {
+  background: linear-gradient(-75deg, transparent 30%, rgba(123,210,255,0.3) 50%, transparent 70%);
+  background-size: 250% 100%;
+  animation: shineSwipe 3s ease-in-out infinite;
+}
+
+/* ========== CONFIG PAGE ========== */
+.config-content {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 1.5rem; padding: 2rem; max-width: 600px; width: 100%;
+}
+.config-title { font-size: 2rem; font-weight: 800; }
+.config-card {
+  width: 100%; padding: 1.25rem 1.5rem;
+  background: #f7f7f7; border-radius: 14px;
+  border: 1px solid #e0e0e0;
+  transition: box-shadow 0.3s ease;
+}
+.config-card:hover { box-shadow: 0 0 0 2px rgba(213,27,219,0.2); }
+.config-label { font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #666; margin-bottom: 0.75rem; display: block; }
+.config-row { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+
+/* Number buttons */
+.num-btn {
+  width: 48px; height: 48px; border-radius: 12px;
+  border: 2px solid #ddd; background: #fff;
+  font-size: 1.1rem; font-weight: 700; cursor: pointer;
+  transition: all 0.2s ease; color: #0a0a0a;
+}
+.num-btn.active, .num-btn:hover {
+  border-color: #d51bdb; background: #d51bdb; color: #fff;
+}
+
+/* Player config */
+.player-card {
+  width: 100%; padding: 1.25rem 1.5rem;
+  background: #f7f7f7; border-radius: 14px;
+  border: 1px solid #e0e0e0; display: flex; flex-direction: column; gap: 0.75rem;
+}
+.player-card-header { font-weight: 700; font-size: 0.9rem; color: #333; }
+.config-select {
+  padding: 0.6rem 1rem; border-radius: 10px;
+  border: 2px solid #ddd; background: #fff;
+  font-size: 0.95rem; font-family: 'Inter', sans-serif;
+  cursor: pointer; color: #0a0a0a;
+  transition: border-color 0.2s;
+}
+.config-select:focus { border-color: #d51bdb; outline: none; }
+
+/* BPM */
+.bpm-control { display: flex; align-items: center; gap: 1rem; }
+.bpm-control input[type="range"] {
+  flex: 1; accent-color: #d51bdb; height: 6px;
+}
+.bpm-display { font-weight: 700; font-size: 1.1rem; min-width: 80px; color: #d51bdb; }
+
+/* ========== RECORDING PAGE ========== */
+.recording-overlay { position: absolute; inset: 0; }
+.webcam-blurred {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; filter: blur(12px) brightness(0.5); z-index: 0;
+}
+.webcam-full {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; z-index: 0; transform: scaleX(-1);
+}
+.guidelines-overlay {
+  position: relative; z-index: 2;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  height: 100%; gap: 1.5rem; padding: 2rem;
+}
+.guidelines-overlay h1 { font-size: 3rem; font-weight: 900; }
+.guidelines-list {
+  list-style: none; display: flex; flex-direction: column; gap: 0.75rem;
+  font-size: 1.1rem; color: #ccc;
+}
+.guidelines-list li::before { content: ""; margin-right: 0.5rem; }
+
+.fade-in-delayed { opacity: 0; animation: fadeIn 0.6s ease 5s forwards; }
+@keyframes fadeIn { to { opacity: 1; } }
+
+/* Countdown */
+.countdown {
+  position: absolute; inset: 0; z-index: 10;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.7);
+  transition: opacity 0.3s ease;
+}
+.countdown.hidden { opacity: 0; pointer-events: none; }
+#countdown-number {
+  font-size: 8rem; font-weight: 900;
+  background: linear-gradient(135deg, #d51bdb, #7bd2ff, #eee13c);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: countPulse 1s ease-in-out infinite;
+}
+@keyframes countPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+}
+
+/* HUD */
+.recording-hud {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 5;
+  display: flex; justify-content: space-between;
+  padding: 1.25rem 1.5rem;
+}
+.hud-top-left { display: flex; align-items: center; gap: 1rem; }
+.rec-indicator { color: #ff3b3b; font-weight: 800; font-size: 1rem; animation: recBlink 1s step-end infinite; }
+@keyframes recBlink { 50% { opacity: 0; } }
+#rec-timer { font-size: 1.1rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.hud-top-right { display: flex; gap: 1rem; }
+.hud-metric {
+  padding: 0.3rem 0.75rem; border-radius: 8px;
+  background: rgba(255,255,255,0.1); font-size: 0.85rem; font-weight: 600;
+}
+.hud-bottom-right {
+  position: absolute; bottom: 2rem; right: 2rem; z-index: 5;
+}
+.stop-btn {
+  padding: 0.75rem 1.5rem; border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.08);
+  color: #eee; font-size: 0.9rem; font-family: 'Inter', sans-serif;
+  cursor: pointer; backdrop-filter: blur(8px);
+  transition: background 0.2s;
+}
+.stop-btn:hover { background: rgba(255,255,255,0.15); }
+.stop-btn kbd {
+  padding: 0.15rem 0.5rem; border-radius: 4px;
+  background: rgba(255,255,255,0.15); font-size: 0.85rem;
+}
+
+/* ========== LOADING PAGE ========== */
+.loading-content {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 1.5rem; text-align: center;
+}
+.loader-ring {
+  width: 80px; height: 80px; border-radius: 50%;
+  border: 4px solid transparent;
+  border-top-color: #d51bdb; border-right-color: #eee13c;
+  border-bottom-color: #7bd2ff; border-left-color: #ab42ee;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-title { font-size: 1.6rem; font-weight: 700; }
+.loading-sub { color: #888; font-size: 1rem; }
+.loading-steps { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 1rem; }
+.load-step {
+  font-size: 0.9rem; color: #555; transition: color 0.3s;
+}
+.load-step.active { color: #d51bdb; font-weight: 600; }
+.load-step.done { color: #7bd2ff; }
+.load-step.done::before { content: "\2713 "; }
+
+/* ========== END PAGE ========== */
+.end-content {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 2rem; text-align: center; padding: 2rem;
+}
+.end-title {
+  font-size: 2.5rem; font-weight: 900;
+  background: linear-gradient(135deg, #d51bdb, #7bd2ff, #eee13c);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.audio-player-card {
+  background: rgba(255,255,255,0.05); border-radius: 16px;
+  padding: 1.5rem 2rem; border: 1px solid rgba(255,255,255,0.1);
+}
+.audio-player-card audio { width: 350px; max-width: 80vw; }
+.end-actions { display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center; }
+
+/* ========== UTILITIES ========== */
+.hidden { display: none !important; }
+
+/* ========== SCROLLBAR ========== */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }

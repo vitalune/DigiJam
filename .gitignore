@@ -1,7 +1,24 @@
 .claude/
 .venv/
+venv/
+env/
 output/
+
+# Secrets / credentials
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+credentials.json
+secrets.json
+service-account*.json
+*_rsa
+*_rsa.pub
+.netrc
 
 # Python
 __pycache__/
@@ -15,3 +32,19 @@ frontend/vocals/animated_gradient_text.md
 frontend/loading/alive_progress.md
 frontend/config/theme_toggler.md
 frontend/config/shine_border.md
+
+# OS / editor cruft
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+.idea/
+.vscode/
+
+# Model weights (download separately)
+pose_landmarker.task
+
+# Personal media
+short_videos/
+video-images/

@@ -7,7 +7,6 @@ import json
 import os
 from datetime import datetime
 from typing import List, Optional, Callable
-import mediapipe as mp
 import time
 import sys
 from pathlib import Path
@@ -18,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from multi_person_tracker import MultiPersonTracker, PersonPose
 from detectors.strum_detector import StrumDetector, StrumEvent
 from audio.music_theory import KEY_CHORD_NAMES, DEFAULT_KEY, get_zone_note
+import mp_drawing_compat
 
 
 class GuitarClassifier:
@@ -78,10 +78,8 @@ class GuitarClassifier:
         self.strum_detector = StrumDetector(dominant_hand=dominant_hand)
         self.on_strum_callback = on_strum_callback
 
-        # MediaPipe drawing utilities
-        self.mp_drawing = mp.solutions.drawing_utils
-        self.mp_drawing_styles = mp.solutions.drawing_styles
-        self.mp_pose = mp.solutions.pose
+        # Drawing utilities (compat layer)
+        self.mp_drawing_compat = mp_drawing_compat
 
         # Track recent strums for display
         self.recent_strums: dict = {}  # player_id -> {"zone": int, "intensity": float}
@@ -253,12 +251,7 @@ class GuitarClassifier:
 
             # Draw skeleton
             if person.pose_landmarks:
-                self.mp_drawing.draw_landmarks(
-                    frame,
-                    person.pose_landmarks,
-                    self.mp_pose.POSE_CONNECTIONS,
-                    landmark_drawing_spec=self.mp_drawing_styles.get_default_pose_landmarks_style()
-                )
+                self.mp_drawing_compat.draw_pose_landmarks(frame, person.pose_landmarks)
 
                 # Get nose position for label
                 nose = person.pose_landmarks.landmark[0]

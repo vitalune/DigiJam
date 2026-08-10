@@ -1,5 +1,5 @@
 """
-Multi-person pose tracking using MediaPipe Pose solution.
+Multi-person pose tracking using MediaPipe Pose Landmarker (Tasks API).
 Wraps single-person detection with player ID tracking.
 
 Supports true multi-person detection via YOLO + MediaPipe pipeline.
@@ -9,9 +9,20 @@ import mediapipe as mp
 import numpy as np
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict, TYPE_CHECKING
+from pathlib import Path
+
+from mediapipe.tasks.python import BaseOptions
+from mediapipe.tasks.python.vision import (
+    PoseLandmarker,
+    PoseLandmarkerOptions,
+    RunningMode,
+)
 
 if TYPE_CHECKING:
     from multi_person.yolo_detector import YOLOPersonDetector, BoundingBox
+
+# Path to the pose landmarker model
+_MODEL_PATH = str(Path(__file__).parent / "pose_landmarker.task")
 
 
 @dataclass
@@ -19,9 +30,15 @@ class PersonPose:
     """Pose data for a single detected person."""
     player_id: int
     bbox: Tuple[int, int, int, int]  # x, y, width, height in pixels
-    pose_landmarks: any  # MediaPipe NormalizedLandmarkList
-    pose_world_landmarks: any  # MediaPipe LandmarkList (meters)
+    pose_landmarks: any  # list of NormalizedLandmark (new API)
+    pose_world_landmarks: any  # list of Landmark (new API)
     confidence: float
+
+
+class _LandmarkListCompat:
+    """Compatibility wrapper so code using .landmark[i] still works."""
+    def __init__(self, landmark_list):
+        self.landmark = landmark_list
 
 
 class MultiPersonTracker:
@@ -70,19 +87,24 @@ class MultiPersonTracker:
             max_persons: Maximum number of people to track
             yolo_detector: Optional YOLO detector for true multi-person detection
         """
-        self.mp_pose = mp.solutions.pose
         self.max_persons = max_persons
         self.yolo_detector = yolo_detector
 
-        # Pose detector - use static_image_mode=True for YOLO crops
-        # (each crop is treated as independent image)
-        self.pose = self.mp_pose.Pose(
-            static_image_mode=(yolo_detector is not None),
-            model_complexity=model_complexity,
-            enable_segmentation=False,
-            min_detection_confidence=min_detection_confidence,
-            min_tracking_confidence=min_tracking_confidence
+        # Use IMAGE mode for YOLO crops (each crop is independent),
+        # VIDEO mode for sequential frame processing
+        running_mode = RunningMode.IMAGE if yolo_detector is not None else RunningMode.VIDEO
+
+        options = PoseLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=_MODEL_PATH),
+            running_mode=running_mode,
+            num_poses=max_persons,
+            min_pose_detection_confidence=min_detection_confidence,
+            min_pose_presence_confidence=min_detection_confidence,
+            min_tracking_confidence=min_tracking_confidence,
         )
+        self.pose = PoseLandmarker.create_from_options(options)
+        self._running_mode = running_mode
+        self._timestamp_ms = 0
 
         # Player ID tracking
         self.next_player_id = 1
@@ -135,6 +157,14 @@ class MultiPersonTracker:
             del self.active_players[pid]
             del self.player_last_seen[pid]
 
+    def _detect(self, mp_image: mp.Image):
+        """Run pose detection using the appropriate mode."""
+        if self._running_mode == RunningMode.IMAGE:
+            return self.pose.detect(mp_image)
+        else:
+            self._timestamp_ms += 33  # ~30 fps
+            return self.pose.detect_for_video(mp_image, self._timestamp_ms)
+
     def process_frame(self, frame: np.ndarray) -> List[PersonPose]:
         """
         Process a frame and return poses for all detected people.
@@ -151,15 +181,22 @@ class MultiPersonTracker:
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         height, width = frame.shape[:2]
 
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+        results = self._detect(mp_image)
+
         persons = []
 
-        # Single-person detection
-        results = self.pose.process(frame_rgb)
+        for i in range(len(results.pose_landmarks)):
+            landmarks = results.pose_landmarks[i]
+            world_landmarks = results.pose_world_landmarks[i]
 
-        if results.pose_landmarks:
+            # Wrap in compat object so .landmark[idx] access works
+            pose_lm = _LandmarkListCompat(landmarks)
+            pose_wlm = _LandmarkListCompat(world_landmarks)
+
             # Calculate centroid from hip landmarks for player ID
-            left_hip = results.pose_landmarks.landmark[self.LEFT_HIP_IDX]
-            right_hip = results.pose_landmarks.landmark[self.RIGHT_HIP_IDX]
+            left_hip = landmarks[self.LEFT_HIP_IDX]
+            right_hip = landmarks[self.RIGHT_HIP_IDX]
             cx = (left_hip.x + right_hip.x) / 2 * width
             cy = (left_hip.y + right_hip.y) / 2 * height
 
@@ -167,9 +204,9 @@ class MultiPersonTracker:
 
             person = PersonPose(
                 player_id=player_id,
-                bbox=(0, 0, width, height),  # Full frame for single-person
-                pose_landmarks=results.pose_landmarks,
-                pose_world_landmarks=results.pose_world_landmarks,
+                bbox=(0, 0, width, height),
+                pose_landmarks=pose_lm,
+                pose_world_landmarks=pose_wlm,
                 confidence=1.0
             )
             persons.append(person)
@@ -182,13 +219,6 @@ class MultiPersonTracker:
         Process frame with true multi-person detection using YOLO + MediaPipe.
 
         If yolo_detector is not configured, falls back to single-person detection.
-
-        Pipeline:
-        1. YOLO detects person bounding boxes
-        2. For each box, crop the person region
-        3. Run MediaPipe Pose on each crop
-        4. Transform landmarks back to original frame coordinates
-        5. Assign/track player IDs
 
         Args:
             frame: BGR image from OpenCV
@@ -210,7 +240,7 @@ class MultiPersonTracker:
 
         for bbox in bboxes:
             # Step 2: Crop person region with padding
-            pad = 20  # Padding pixels
+            pad = 20
             x1 = max(0, bbox.x - pad)
             y1 = max(0, bbox.y - pad)
             x2 = min(width, bbox.x + bbox.w + pad)
@@ -223,21 +253,26 @@ class MultiPersonTracker:
 
             # Step 3: Run MediaPipe Pose on crop
             crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-            results = self.pose.process(crop_rgb)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=crop_rgb)
+            results = self.pose.detect(mp_image)
 
             if not results.pose_landmarks:
                 continue
 
+            landmarks = results.pose_landmarks[0]
+            world_landmarks = results.pose_world_landmarks[0]
+
             # Step 4: Transform normalized landmarks to original frame coordinates
-            transformed_landmarks = self._transform_landmarks_to_frame(
-                results.pose_landmarks,
-                x1, y1, x2 - x1, y2 - y1,
-                width, height
+            transformed = self._transform_landmarks_to_frame(
+                landmarks, x1, y1, x2 - x1, y2 - y1, width, height
             )
 
+            pose_lm = _LandmarkListCompat(transformed)
+            pose_wlm = _LandmarkListCompat(world_landmarks)
+
             # Step 5: Calculate centroid and assign player ID
-            left_hip = transformed_landmarks.landmark[self.LEFT_HIP_IDX]
-            right_hip = transformed_landmarks.landmark[self.RIGHT_HIP_IDX]
+            left_hip = transformed[self.LEFT_HIP_IDX]
+            right_hip = transformed[self.RIGHT_HIP_IDX]
             cx = (left_hip.x + right_hip.x) / 2 * width
             cy = (left_hip.y + right_hip.y) / 2 * height
 
@@ -246,8 +281,8 @@ class MultiPersonTracker:
             person = PersonPose(
                 player_id=player_id,
                 bbox=(bbox.x, bbox.y, bbox.w, bbox.h),
-                pose_landmarks=transformed_landmarks,
-                pose_world_landmarks=results.pose_world_landmarks,
+                pose_landmarks=pose_lm,
+                pose_world_landmarks=pose_wlm,
                 confidence=bbox.confidence
             )
             persons.append(person)
@@ -257,22 +292,19 @@ class MultiPersonTracker:
 
     def _transform_landmarks_to_frame(
         self,
-        landmarks,
+        landmarks: list,
         crop_x: int,
         crop_y: int,
         crop_w: int,
         crop_h: int,
         frame_w: int,
         frame_h: int
-    ):
+    ) -> list:
         """
         Transform normalized landmarks from crop coordinates to full frame coordinates.
 
-        MediaPipe landmarks are normalized (0-1) relative to their input image.
-        This transforms them to be normalized relative to the full frame.
-
         Args:
-            landmarks: MediaPipe NormalizedLandmarkList
+            landmarks: List of NormalizedLandmark
             crop_x, crop_y: Top-left corner of crop in frame
             crop_w, crop_h: Size of crop
             frame_w, frame_h: Size of original frame
@@ -280,18 +312,13 @@ class MultiPersonTracker:
         Returns:
             Modified landmarks with coordinates relative to full frame
         """
-        # Create a copy-like structure by modifying in place
-        # MediaPipe landmarks are mutable
-        for landmark in landmarks.landmark:
-            # Convert from crop-relative (0-1) to crop pixel coords
+        for landmark in landmarks:
             pixel_x = landmark.x * crop_w
             pixel_y = landmark.y * crop_h
 
-            # Offset to frame coordinates
             frame_pixel_x = pixel_x + crop_x
             frame_pixel_y = pixel_y + crop_y
 
-            # Normalize to frame (0-1)
             landmark.x = frame_pixel_x / frame_w
             landmark.y = frame_pixel_y / frame_h
 
@@ -498,4 +525,7 @@ class MultiPersonTracker:
 
     def close(self):
         """Release resources."""
-        self.pose.close()
+        try:
+            self.pose.close()
+        except Exception:
+            pass

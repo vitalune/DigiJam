@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DigiJam</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- ===================== HOME PAGE ===================== -->
+  <section id="page-home" class="page active dark">
+    <div class="home-content">
+      <div class="video-text-container">
+        <video autoplay muted loop playsinline id="bg-video">
+          <source src="/static/video/concertvideo1.mp4" type="video/mp4">
+        </video>
+        <h1 class="video-text-title">DigiJam</h1>
+      </div>
+      <p class="home-caption">
+        Turn your <span class="highlight highlight-purple">body movements</span> into <span class="highlight highlight-yellow">music</span>
+      </p>
+      <p class="home-description">
+        Play air drums, strum an invisible guitar, or tap piano keys with just your hands.
+        Our AI watches your webcam and creates real music from your gestures.
+      </p>
+      <button class="shiny-btn" onclick="navigateTo('config')">
+        <span class="shiny-btn-text">Configure Environment</span>
+        <span class="shiny-btn-shine"></span>
+      </button>
+    </div>
+  </section>
+
+  <!-- ===================== CONFIG PAGE ===================== -->
+  <section id="page-config" class="page light">
+    <div class="config-content">
+      <h1 class="config-title">Session Setup</h1>
+
+      <div class="config-card">
+        <label class="config-label">Number of Players</label>
+        <div class="config-row">
+          <button class="num-btn active" data-count="1" onclick="setPlayerCount(1)">1</button>
+          <button class="num-btn" data-count="2" onclick="setPlayerCount(2)">2</button>
+          <button class="num-btn" data-count="3" onclick="setPlayerCount(3)">3</button>
+        </div>
+      </div>
+
+      <div id="players-config">
+        <!-- Player config cards inserted by JS -->
+      </div>
+
+      <div class="config-card">
+        <label class="config-label">Tempo</label>
+        <div class="bpm-control">
+          <input type="range" id="bpm-slider" min="60" max="180" value="120" oninput="updateBPM(this.value)">
+          <span id="bpm-value" class="bpm-display">120 BPM</span>
+        </div>
+      </div>
+
+      <div class="config-card">
+        <label class="config-label">Key</label>
+        <div class="config-row">
+          <select id="key-note" class="config-select">
+            <option>C</option><option>D</option><option selected>E</option><option>F</option>
+            <option>G</option><option>A</option><option>B</option>
+          </select>
+          <select id="key-mode" class="config-select">
+            <option>Major</option><option selected>Minor</option>
+          </select>
+        </div>
+      </div>
+
+      <button class="shiny-btn shiny-btn-light" onclick="startRecording()">
+        <span class="shiny-btn-text">Start Playing</span>
+        <span class="shiny-btn-shine"></span>
+      </button>
+    </div>
+  </section>
+
+  <!-- ===================== RECORDING PAGE ===================== -->
+  <section id="page-recording" class="page dark">
+    <!-- Pre-recording guidelines -->
+    <div id="pre-recording" class="recording-overlay">
+      <video id="webcam-preview" autoplay muted playsinline class="webcam-blurred"></video>
+      <div class="guidelines-overlay">
+        <h1>Get Ready</h1>
+        <ul class="guidelines-list">
+          <li>Stand where your full upper body is visible</li>
+          <li>Make sure there's good lighting</li>
+          <li>Keep some space to move your arms freely</li>
+          <li>The camera will track your body movements</li>
+        </ul>
+        <button id="start-rec-btn" class="shiny-btn fade-in-delayed" onclick="beginCountdown()">
+          <span class="shiny-btn-text">Start Recording</span>
+          <span class="shiny-btn-shine"></span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Active recording -->
+    <div id="active-recording" class="recording-overlay hidden">
+      <video id="webcam-recording" autoplay muted playsinline class="webcam-full"></video>
+      <div id="countdown-overlay" class="countdown">
+        <span id="countdown-number">5</span>
+      </div>
+      <div class="recording-hud">
+        <div class="hud-top-left">
+          <span class="rec-indicator">&#9679; REC</span>
+          <span id="rec-timer">00:00</span>
+        </div>
+        <div class="hud-top-right">
+          <span id="hud-bpm" class="hud-metric"></span>
+          <span id="hud-key" class="hud-metric"></span>
+        </div>
+      </div>
+      <div class="hud-bottom-right">
+        <button class="stop-btn" onclick="stopRecording()">
+          Press <kbd>Space</kbd> to Stop
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== LOADING PAGE ===================== -->
+  <section id="page-loading" class="page dark">
+    <div class="loading-content">
+      <div class="loader-ring">
+        <div class="ring-segment purple"></div>
+        <div class="ring-segment yellow"></div>
+        <div class="ring-segment cyan"></div>
+        <div class="ring-segment magenta"></div>
+      </div>
+      <h2 class="loading-title">Creating your music...</h2>
+      <p class="loading-sub">Analyzing gestures and composing audio</p>
+      <div class="loading-steps">
+        <div id="step-detect" class="load-step active">Detecting poses</div>
+        <div id="step-classify" class="load-step">Classifying instruments</div>
+        <div id="step-render" class="load-step">Rendering audio</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== END PAGE ===================== -->
+  <section id="page-end" class="page dark">
+    <div class="end-content">
+      <h1 class="end-title">Your Music is Ready!</h1>
+      <div class="audio-player-card">
+        <audio id="result-audio" controls></audio>
+      </div>
+      <div class="end-actions">
+        <a id="download-link" class="shiny-btn" download>
+          <span class="shiny-btn-text">Download WAV</span>
+          <span class="shiny-btn-shine"></span>
+        </a>
+        <button class="shiny-btn" onclick="navigateTo('home')">
+          <span class="shiny-btn-text">Play Again</span>
+          <span class="shiny-btn-shine"></span>
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

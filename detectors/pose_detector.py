@@ -8,6 +8,19 @@ import mediapipe as mp
 import json
 import os
 from datetime import datetime
+from pathlib import Path
+
+from mediapipe.tasks.python import BaseOptions
+from mediapipe.tasks.python.vision import (
+    PoseLandmarker,
+    PoseLandmarkerOptions,
+    PoseLandmarksConnections,
+    RunningMode,
+    drawing_utils,
+    drawing_styles,
+)
+
+_MODEL_PATH = str(Path(__file__).parent.parent / "pose_landmarker.task")
 
 
 class PoseDetector:
@@ -35,34 +48,32 @@ class PoseDetector:
             min_detection_confidence: Minimum confidence for detection
             min_tracking_confidence: Minimum confidence for tracking
         """
-        self.mp_pose = mp.solutions.pose
-        self.mp_drawing = mp.solutions.drawing_utils
-        self.mp_drawing_styles = mp.solutions.drawing_styles
-
         self.model_complexity = model_complexity
         self.min_detection_confidence = min_detection_confidence
         self.min_tracking_confidence = min_tracking_confidence
 
-        # Default pose instance for images
-        self.pose = self.mp_pose.Pose(
-            static_image_mode=True,
-            model_complexity=model_complexity,
-            enable_segmentation=False,
-            min_detection_confidence=min_detection_confidence,
-            min_tracking_confidence=min_tracking_confidence
+        # Default pose instance for images (IMAGE mode)
+        options = PoseLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=_MODEL_PATH),
+            running_mode=RunningMode.IMAGE,
+            num_poses=1,
+            min_pose_detection_confidence=min_detection_confidence,
+            min_pose_presence_confidence=min_detection_confidence,
+            min_tracking_confidence=min_tracking_confidence,
         )
+        self.pose = PoseLandmarker.create_from_options(options)
 
     def _extract_landmarks(self, pose_landmarks):
         """Extract landmark data as a list of dictionaries."""
         landmarks = []
-        for idx, landmark in enumerate(pose_landmarks.landmark):
+        for idx, landmark in enumerate(pose_landmarks):
             landmarks.append({
                 "id": idx,
-                "name": self.LANDMARK_NAMES[idx],
+                "name": self.LANDMARK_NAMES[idx] if idx < len(self.LANDMARK_NAMES) else f"landmark_{idx}",
                 "x": round(landmark.x, 6),
                 "y": round(landmark.y, 6),
                 "z": round(landmark.z, 6),
-                "visibility": round(landmark.visibility, 4)
+                "visibility": round(landmark.visibility if landmark.visibility is not None else 0, 4)
             })
         return landmarks
 
@@ -88,19 +99,22 @@ class PoseDetector:
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
         # Process with MediaPipe
-        results = self.pose.process(image_rgb)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
+        results = self.pose.detect(mp_image)
 
         if results.pose_landmarks:
+            pose_lm = results.pose_landmarks[0]
+
             # Draw landmarks on image
-            self.mp_drawing.draw_landmarks(
+            drawing_utils.draw_landmarks(
                 image,
-                results.pose_landmarks,
-                self.mp_pose.POSE_CONNECTIONS,
-                landmark_drawing_spec=self.mp_drawing_styles.get_default_pose_landmarks_style()
+                pose_lm,
+                PoseLandmarksConnections.POSE_LANDMARKS,
+                drawing_styles.get_default_pose_landmarks_style(),
             )
 
             # Extract landmark data
-            landmarks = self._extract_landmarks(results.pose_landmarks)
+            landmarks = self._extract_landmarks(pose_lm)
 
             # Save annotated image
             base_name = os.path.basename(image_path)
@@ -145,14 +159,17 @@ class PoseDetector:
         """
         os.makedirs(output_dir, exist_ok=True)
 
-        # Create a separate pose instance for video (no segmentation to avoid resolution issues)
-        video_pose = self.mp_pose.Pose(
-            static_image_mode=False,
-            model_complexity=self.model_complexity,
-            enable_segmentation=False,
-            min_detection_confidence=self.min_detection_confidence,
-            min_tracking_confidence=self.min_tracking_confidence
+        # Create a separate pose instance for video
+        video_options = PoseLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=_MODEL_PATH),
+            running_mode=RunningMode.VIDEO,
+            num_poses=1,
+            min_pose_detection_confidence=self.min_detection_confidence,
+            min_pose_presence_confidence=self.min_detection_confidence,
+            min_tracking_confidence=self.min_tracking_confidence,
         )
+        video_pose = PoseLandmarker.create_from_options(video_options)
+        timestamp_ms = 0
 
         # Open video
         cap = cv2.VideoCapture(video_path)
@@ -188,7 +205,9 @@ class PoseDetector:
                 break
 
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = video_pose.process(frame_rgb)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+            timestamp_ms += int(1000 / fps) if fps > 0 else 33
+            results = video_pose.detect_for_video(mp_image, timestamp_ms)
 
             frame_data = {
                 "frame": frame_count,
@@ -196,15 +215,17 @@ class PoseDetector:
             }
 
             if results.pose_landmarks:
+                pose_lm = results.pose_landmarks[0]
+
                 # Draw landmarks
-                self.mp_drawing.draw_landmarks(
+                drawing_utils.draw_landmarks(
                     frame,
-                    results.pose_landmarks,
-                    self.mp_pose.POSE_CONNECTIONS,
-                    landmark_drawing_spec=self.mp_drawing_styles.get_default_pose_landmarks_style()
+                    pose_lm,
+                    PoseLandmarksConnections.POSE_LANDMARKS,
+                    drawing_styles.get_default_pose_landmarks_style(),
                 )
 
-                frame_data["landmarks"] = self._extract_landmarks(results.pose_landmarks)
+                frame_data["landmarks"] = self._extract_landmarks(pose_lm)
                 frames_with_pose += 1
             else:
                 frame_data["landmarks"] = None
@@ -246,14 +267,16 @@ class PoseDetector:
 
     def realtime_webcam(self):
         """Real-time pose detection from webcam."""
-        # Create a separate pose instance for webcam
-        webcam_pose = self.mp_pose.Pose(
-            static_image_mode=False,
-            model_complexity=1,  # Use lighter model for real-time
-            enable_segmentation=False,
-            min_detection_confidence=self.min_detection_confidence,
-            min_tracking_confidence=self.min_tracking_confidence
+        webcam_options = PoseLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=_MODEL_PATH),
+            running_mode=RunningMode.VIDEO,
+            num_poses=1,
+            min_pose_detection_confidence=self.min_detection_confidence,
+            min_pose_presence_confidence=self.min_detection_confidence,
+            min_tracking_confidence=self.min_tracking_confidence,
         )
+        webcam_pose = PoseLandmarker.create_from_options(webcam_options)
+        timestamp_ms = 0
 
         cap = cv2.VideoCapture(0)
 
@@ -271,14 +294,16 @@ class PoseDetector:
                 break
 
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = webcam_pose.process(frame_rgb)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+            timestamp_ms += 33
+            results = webcam_pose.detect_for_video(mp_image, timestamp_ms)
 
             if results.pose_landmarks:
-                self.mp_drawing.draw_landmarks(
+                drawing_utils.draw_landmarks(
                     frame,
-                    results.pose_landmarks,
-                    self.mp_pose.POSE_CONNECTIONS,
-                    landmark_drawing_spec=self.mp_drawing_styles.get_default_pose_landmarks_style()
+                    results.pose_landmarks[0],
+                    PoseLandmarksConnections.POSE_LANDMARKS,
+                    drawing_styles.get_default_pose_landmarks_style(),
                 )
 
             cv2.imshow('Pose Detection - Press Q to quit', frame)
